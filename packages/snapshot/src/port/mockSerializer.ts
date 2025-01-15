@@ -7,7 +7,7 @@
  * https://github.com/facebook/jest/blob/4eb4f6a59b6eae0e05b8e51dd8cd3fdca1c7aff1/packages/jest-snapshot/src/mockSerializer.ts#L4
  */
 
-import type { NewPlugin } from 'pretty-format'
+import type { NewPlugin } from '@vitest/pretty-format'
 
 export const serialize: NewPlugin['serialize'] = (
   val,
@@ -24,21 +24,21 @@ export const serialize: NewPlugin['serialize'] = (
   let callsString = ''
   if (val.mock.calls.length !== 0) {
     const indentationNext = indentation + config.indent
-    callsString
-       = ` {${
-       config.spacingOuter
-       }${indentationNext
-       }"calls": ${
-       printer(val.mock.calls, config, indentationNext, depth, refs)
-       }${config.min ? ', ' : ','
-       }${config.spacingOuter
-       }${indentationNext
-       }"results": ${
-       printer(val.mock.results, config, indentationNext, depth, refs)
-       }${config.min ? '' : ','
-       }${config.spacingOuter
-       }${indentation
-       }}`
+    callsString = ` {${config.spacingOuter}${indentationNext}"calls": ${printer(
+      val.mock.calls,
+      config,
+      indentationNext,
+      depth,
+      refs,
+    )}${config.min ? ', ' : ','}${
+      config.spacingOuter
+    }${indentationNext}"results": ${printer(
+      val.mock.results,
+      config,
+      indentationNext,
+      depth,
+      refs,
+    )}${config.min ? '' : ','}${config.spacingOuter}${indentation}}`
   }
 
   return `[MockFunction${nameString}]${callsString}`

@@ -1,5 +1,6 @@
 {
   "name": "@vitest/example-lit",
+  "type": "module",
   "private": true,
   "files": [
     "dist",
@@ -9,14 +10,16 @@
     "coverage": "vitest run --coverage",
     "dev": "vite",
     "test": "vitest",
+    "list": "vitest list",
     "test:ui": "vitest --ui"
   },
   "dependencies": {
-    "lit": "^2.2.5"
+    "lit": "^3.0.1"
   },
   "devDependencies": {
-    "@vitest/ui": "latest",
+    "@vitest/browser": "latest",
     "jsdom": "latest",
+    "playwright": "^1.49.0",
     "vite": "latest",
     "vitest": "latest"
   },

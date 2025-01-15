@@ -1,8 +1,8 @@
-import { afterAll, beforeAll } from 'vitest'
+import { afterAll, beforeAll, beforeEach } from 'vitest'
 
 beforeAll(() => {
   // @ts-expect-error type
-  global.something = 'something'
+  globalThis.something = 'something'
 })
 
 beforeAll(async () => {
@@ -23,7 +23,7 @@ beforeEach(async () => {
 
 afterAll(() => {
   // @ts-expect-error type
-  delete global.something
+  delete globalThis.something
 })
 
 afterAll(async () => {

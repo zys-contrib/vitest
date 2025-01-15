@@ -1,20 +1,47 @@
-import { pathToFileURL } from 'node:url'
-import mm from 'micromatch'
-import { resolve } from 'pathe'
-import { distDir, rootDir } from '../paths'
-import type { VitestPool } from '../types'
+import type { Awaitable } from '@vitest/utils'
 import type { Vitest } from './core'
-import { createChildProcessPool } from './pools/child'
+import type { TestProject } from './project'
+import type { TestSpecification } from './spec'
+import type { BuiltinPool, Pool } from './types/pool-options'
+import { isatty } from 'node:tty'
+import mm from 'micromatch'
+import { isWindows } from '../utils/env'
+import { createForksPool } from './pools/forks'
 import { createThreadsPool } from './pools/threads'
-import { createBrowserPool } from './pools/browser'
-import type { WorkspaceProject } from './workspace'
+import { createTypecheckPool } from './pools/typecheck'
+import { createVmForksPool } from './pools/vmForks'
+import { createVmThreadsPool } from './pools/vmThreads'
 
-export type WorkspaceSpec = [project: WorkspaceProject, testFile: string]
-export type RunWithFiles = (files: WorkspaceSpec[], invalidates?: string[]) => Promise<void>
+/**
+ * @deprecated use TestSpecification instead
+ */
+export type WorkspaceSpec = TestSpecification & [
+  /**
+   * @deprecated use spec.project instead
+   */
+  project: TestProject,
+  /**
+   * @deprecated use spec.moduleId instead
+   */
+  file: string,
+  /**
+   * @deprecated use spec.pool instead
+   */
+  options: { pool: Pool },
+]
+
+export type RunWithFiles = (
+  files: TestSpecification[],
+  invalidates?: string[]
+) => Awaitable<void>
+
+type LocalPool = Exclude<Pool, 'browser'>
 
 export interface ProcessPool {
+  name: string
   runTests: RunWithFiles
-  close: () => Promise<void>
+  collectTests: RunWithFiles
+  close?: () => Awaitable<void>
 }
 
 export interface PoolProcessOptions {
@@ -22,98 +49,194 @@ export interface PoolProcessOptions {
   env: Record<string, string>
 }
 
-const loaderPath = pathToFileURL(resolve(distDir, './loader.js')).href
-const suppressLoaderWarningsPath = resolve(rootDir, './suppress-warnings.cjs')
+export const builtinPools: BuiltinPool[] = [
+  'forks',
+  'threads',
+  'browser',
+  'vmThreads',
+  'vmForks',
+  'typescript',
+]
+
+function getDefaultPoolName(project: TestProject): Pool {
+  if (project.config.browser.enabled) {
+    return 'browser'
+  }
+  return project.config.pool
+}
+
+export function getFilePoolName(project: TestProject, file: string) {
+  for (const [glob, pool] of project.config.poolMatchGlobs) {
+    if ((pool as Pool) === 'browser') {
+      throw new Error(
+        'Since Vitest 0.31.0 "browser" pool is not supported in "poolMatchGlobs". You can create a workspace to run some of your tests in browser in parallel. Read more: https://vitest.dev/guide/workspace',
+      )
+    }
+    if (mm.isMatch(file, glob, { cwd: project.config.root })) {
+      return pool as Pool
+    }
+  }
+  return getDefaultPoolName(project)
+}
 
 export function createPool(ctx: Vitest): ProcessPool {
-  const pools: Record<VitestPool, ProcessPool | null> = {
-    child_process: null,
+  const pools: Record<Pool, ProcessPool | null> = {
+    forks: null,
     threads: null,
     browser: null,
+    vmThreads: null,
+    vmForks: null,
+    typescript: null,
   }
 
-  function getDefaultPoolName(project: WorkspaceProject) {
-    if (project.config.browser.enabled)
-      return 'browser'
-    if (project.config.threads)
-      return 'threads'
-    return 'child_process'
-  }
+  // in addition to resolve.conditions Vite also adds production/development,
+  // see: https://github.com/vitejs/vite/blob/af2aa09575229462635b7cbb6d248ca853057ba2/packages/vite/src/node/plugins/resolve.ts#L1056-L1080
+  const potentialConditions = new Set([
+    'production',
+    'development',
+    ...ctx.vite.config.resolve.conditions,
+  ])
+  const conditions = [...potentialConditions]
+    .filter((condition) => {
+      if (condition === 'production') {
+        return ctx.vite.config.isProduction
+      }
+      if (condition === 'development') {
+        return !ctx.vite.config.isProduction
+      }
+      return true
+    })
+    .flatMap(c => ['--conditions', c])
 
-  function getPoolName([project, file]: WorkspaceSpec) {
-    for (const [glob, pool] of project.config.poolMatchGlobs || []) {
-      if (mm.isMatch(file, glob, { cwd: project.config.root }))
-        return pool
-    }
-    return getDefaultPoolName(project)
-  }
+  // Instead of passing whole process.execArgv to the workers, pick allowed options.
+  // Some options may crash worker, e.g. --prof, --title. nodejs/node#41103
+  const execArgv = process.execArgv.filter(
+    execArg =>
+      execArg.startsWith('--cpu-prof')
+      || execArg.startsWith('--heap-prof')
+      || execArg.startsWith('--diagnostic-dir'),
+  )
 
-  async function runTests(files: WorkspaceSpec[], invalidate?: string[]) {
-    const conditions = ctx.server.config.resolve.conditions?.flatMap(c => ['--conditions', c]) || []
-
-    // Instead of passing whole process.execArgv to the workers, pick allowed options.
-    // Some options may crash worker, e.g. --prof, --title. nodejs/node#41103
-    const execArgv = process.execArgv.filter(execArg =>
-      execArg.startsWith('--cpu-prof') || execArg.startsWith('--heap-prof'),
-    )
-
+  async function executeTests(method: 'runTests' | 'collectTests', files: TestSpecification[], invalidate?: string[]) {
     const options: PoolProcessOptions = {
-      execArgv: ctx.config.deps.registerNodeLoader
-        ? [
-            ...execArgv,
-            '--require',
-            suppressLoaderWarningsPath,
-            '--experimental-loader',
-            loaderPath,
-          ]
-        : [
-            ...execArgv,
-            ...conditions,
-          ],
+      execArgv: [...execArgv, ...conditions],
       env: {
         TEST: 'true',
         VITEST: 'true',
-        NODE_ENV: ctx.config.mode || 'test',
+        NODE_ENV: process.env.NODE_ENV || 'test',
         VITEST_MODE: ctx.config.watch ? 'WATCH' : 'RUN',
+        FORCE_TTY: isatty(1) ? 'true' : '',
         ...process.env,
         ...ctx.config.env,
       },
     }
 
-    const filesByPool = {
-      child_process: [] as WorkspaceSpec[],
-      threads: [] as WorkspaceSpec[],
-      browser: [] as WorkspaceSpec[],
+    // env are case-insensitive on Windows, but spawned processes don't support it
+    if (isWindows) {
+      for (const name in options.env) {
+        options.env[name.toUpperCase()] = options.env[name]
+      }
+    }
+
+    const customPools = new Map<string, ProcessPool>()
+    async function resolveCustomPool(filepath: string) {
+      if (customPools.has(filepath)) {
+        return customPools.get(filepath)!
+      }
+
+      const pool = await ctx.runner.executeId(filepath)
+      if (typeof pool.default !== 'function') {
+        throw new TypeError(
+          `Custom pool "${filepath}" must export a function as default export`,
+        )
+      }
+
+      const poolInstance = await pool.default(ctx, options)
+
+      if (typeof poolInstance?.name !== 'string') {
+        throw new TypeError(
+          `Custom pool "${filepath}" should return an object with "name" property`,
+        )
+      }
+      if (typeof poolInstance?.[method] !== 'function') {
+        throw new TypeError(
+          `Custom pool "${filepath}" should return an object with "${method}" method`,
+        )
+      }
+
+      customPools.set(filepath, poolInstance)
+      return poolInstance as ProcessPool
+    }
+
+    const filesByPool: Record<LocalPool, TestSpecification[]> = {
+      forks: [],
+      threads: [],
+      vmThreads: [],
+      vmForks: [],
+      typescript: [],
+    }
+
+    const factories: Record<LocalPool, () => ProcessPool> = {
+      vmThreads: () => createVmThreadsPool(ctx, options),
+      threads: () => createThreadsPool(ctx, options),
+      forks: () => createForksPool(ctx, options),
+      vmForks: () => createVmForksPool(ctx, options),
+      typescript: () => createTypecheckPool(ctx),
     }
 
     for (const spec of files) {
-      const pool = getPoolName(spec)
+      const { pool } = spec[2]
+      filesByPool[pool] ??= []
       filesByPool[pool].push(spec)
     }
 
-    await Promise.all(Object.entries(filesByPool).map(([pool, files]) => {
-      if (!files.length)
-        return null
+    const Sequencer = ctx.config.sequence.sequencer
+    const sequencer = new Sequencer(ctx)
 
-      if (pool === 'browser') {
-        pools.browser ??= createBrowserPool(ctx)
-        return pools.browser.runTests(files, invalidate)
+    async function sortSpecs(specs: TestSpecification[]) {
+      if (ctx.config.shard) {
+        specs = await sequencer.shard(specs)
       }
+      return sequencer.sort(specs)
+    }
 
-      if (pool === 'threads') {
-        pools.threads ??= createThreadsPool(ctx, options)
-        return pools.threads.runTests(files, invalidate)
-      }
+    await Promise.all(
+      Object.entries(filesByPool).map(async (entry) => {
+        const [pool, files] = entry as [Pool, TestSpecification[]]
 
-      pools.child_process ??= createChildProcessPool(ctx, options)
-      return pools.child_process.runTests(files, invalidate)
-    }))
+        if (!files.length) {
+          return null
+        }
+
+        const specs = await sortSpecs(files)
+
+        if (pool in factories) {
+          const factory = factories[pool]
+          pools[pool] ??= factory()
+          return pools[pool]![method](specs, invalidate)
+        }
+
+        if (pool === 'browser') {
+          pools[pool] ??= await (async () => {
+            const { createBrowserPool } = await import('@vitest/browser')
+            return createBrowserPool(ctx)
+          })()
+          return pools[pool]![method](specs, invalidate)
+        }
+
+        const poolHandler = await resolveCustomPool(pool)
+        pools[poolHandler.name] ??= poolHandler
+        return poolHandler[method](specs, invalidate)
+      }),
+    )
   }
 
   return {
-    runTests,
+    name: 'default',
+    runTests: (files, invalidates) => executeTests('runTests', files, invalidates),
+    collectTests: (files, invalidates) => executeTests('collectTests', files, invalidates),
     async close() {
-      await Promise.all(Object.values(pools).map(p => p?.close()))
+      await Promise.all(Object.values(pools).map(p => p?.close?.()))
     },
   }
 }

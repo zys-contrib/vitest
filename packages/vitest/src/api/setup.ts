@@ -1,34 +1,43 @@
-import { existsSync, promises as fs } from 'node:fs'
+import type { File, TaskResultPack } from '@vitest/runner'
 
-import { dirname } from 'pathe'
-import type { BirpcReturn } from 'birpc'
+import type { ViteDevServer } from 'vite'
+import type { WebSocket } from 'ws'
+import type { Vitest } from '../node/core'
+import type { Reporter } from '../node/types/reporter'
+import type { SerializedTestSpecification } from '../runtime/types/utils'
+import type { Awaitable, ModuleGraphData, UserConsoleLog } from '../types/general'
+import type {
+  TransformResultWithSource,
+  WebSocketEvents,
+  WebSocketHandlers,
+  WebSocketRPC,
+} from './types'
+import { existsSync, promises as fs } from 'node:fs'
+import { isPrimitive, noop } from '@vitest/utils'
 import { createBirpc } from 'birpc'
 import { parse, stringify } from 'flatted'
-import type { WebSocket } from 'ws'
 import { WebSocketServer } from 'ws'
-import type { ViteDevServer } from 'vite'
 import { API_PATH } from '../constants'
-import type { Vitest } from '../node'
-import type { File, ModuleGraphData, Reporter, TaskResultPack, UserConsoleLog } from '../types'
-import { getModuleGraph, isPrimitive } from '../utils'
-import type { WorkspaceProject } from '../node/workspace'
+import { getModuleGraph } from '../utils/graph'
+import { stringifyReplace } from '../utils/serialization'
 import { parseErrorStacktrace } from '../utils/source-map'
-import type { TransformResultWithSource, WebSocketEvents, WebSocketHandlers } from './types'
 
-export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, server?: ViteDevServer) {
-  const ctx = 'ctx' in vitestOrWorkspace ? vitestOrWorkspace.ctx : vitestOrWorkspace
-
+export function setup(ctx: Vitest, _server?: ViteDevServer) {
   const wss = new WebSocketServer({ noServer: true })
 
-  const clients = new Map<WebSocket, BirpcReturn<WebSocketEvents>>()
+  const clients = new Map<WebSocket, WebSocketRPC>()
 
-  ;(server || ctx.server).httpServer?.on('upgrade', (request, socket, head) => {
-    if (!request.url)
+  const server = _server || ctx.server
+
+  server.httpServer?.on('upgrade', (request, socket, head) => {
+    if (!request.url) {
       return
+    }
 
     const { pathname } = new URL(request.url, 'http://localhost')
-    if (pathname !== API_PATH)
+    if (pathname !== API_PATH) {
       return
+    }
 
     wss.handleUpgrade(request, socket, head, (ws) => {
       wss.emit('connection', ws, request)
@@ -39,19 +48,8 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, server?: Vit
   function setupClient(ws: WebSocket) {
     const rpc = createBirpc<WebSocketEvents, WebSocketHandlers>(
       {
-        async onDone(testId) {
-          return ctx.state.browserTestPromises.get(testId)?.resolve(true)
-        },
-        async onCollected(files) {
-          ctx.state.collectFiles(files)
-          await ctx.report('onCollected', files)
-        },
-        async onTaskUpdate(packs) {
-          ctx.state.updateTasks(packs)
-          await ctx.report('onTaskUpdate', packs)
-        },
-        onAfterSuiteRun(meta) {
-          ctx.coverageProvider?.onAfterSuiteRun(meta)
+        async onTaskUpdate(packs, events) {
+          await ctx._testRun.updated(packs, events)
         },
         getFiles() {
           return ctx.state.getFiles()
@@ -59,42 +57,37 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, server?: Vit
         getPaths() {
           return ctx.state.getPaths()
         },
-        sendLog(log) {
-          return ctx.report('onUserConsoleLog', log)
-        },
-        resolveSnapshotPath(testPath) {
-          return ctx.snapshot.resolvePath(testPath)
-        },
-        resolveSnapshotRawPath(testPath, rawPath) {
-          return ctx.snapshot.resolveRawPath(testPath, rawPath)
-        },
-        removeFile(id) {
-          return fs.unlink(id)
-        },
-        createDirectory(id) {
-          return fs.mkdir(id, { recursive: true })
-        },
-        async readFile(id) {
-          if (!existsSync(id))
+        async readTestFile(id) {
+          if (!ctx.state.filesMap.has(id) || !existsSync(id)) {
             return null
+          }
           return fs.readFile(id, 'utf-8')
         },
-        snapshotSaved(snapshot) {
-          ctx.snapshot.add(snapshot)
+        async saveTestFile(id, content) {
+          if (!ctx.state.filesMap.has(id) || !existsSync(id)) {
+            throw new Error(
+              `Test file "${id}" was not registered, so it cannot be updated using the API.`,
+            )
+          }
+          return fs.writeFile(id, content, 'utf-8')
         },
-        async writeFile(id, content, ensureDir) {
-          if (ensureDir)
-            await fs.mkdir(dirname(id), { recursive: true })
-          return await fs.writeFile(id, content, 'utf-8')
+        async rerun(files, resetTestNamePattern) {
+          await ctx.rerunFiles(files, undefined, true, resetTestNamePattern)
         },
-        async rerun(files) {
-          await ctx.rerunFiles(files)
+        async rerunTask(id) {
+          await ctx.rerunTask(id)
         },
         getConfig() {
-          return ctx.config
+          return ctx.getRootProject().serializedConfig
         },
-        async getTransformResult(id) {
-          const result: TransformResultWithSource | null | undefined = await ctx.vitenode.transformRequest(id)
+        getResolvedProjectNames(): string[] {
+          return ctx.resolvedProjects.map(p => p.name)
+        },
+        async getTransformResult(projectName: string, id, browser = false) {
+          const project = ctx.getProjectByName(projectName)
+          const result: TransformResultWithSource | null | undefined = browser
+            ? await project.browser!.vite.transformRequest(id)
+            : await project.vitenode.transformRequest(id)
           if (result) {
             try {
               result.source = result.source || (await fs.readFile(id, 'utf-8'))
@@ -103,21 +96,47 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, server?: Vit
             return result
           }
         },
-        async getModuleGraph(id: string): Promise<ModuleGraphData> {
-          return getModuleGraph(ctx, id)
+        async getModuleGraph(project, id, browser): Promise<ModuleGraphData> {
+          return getModuleGraph(ctx, project, id, browser)
         },
-        updateSnapshot(file?: File) {
-          if (!file)
-            return ctx.updateSnapshot()
-          return ctx.updateSnapshot([file.filepath])
+        async updateSnapshot(file?: File) {
+          if (!file) {
+            await ctx.updateSnapshot()
+          }
+          else {
+            await ctx.updateSnapshot([file.filepath])
+          }
+        },
+        getUnhandledErrors() {
+          return ctx.state.getUnhandledErrors()
+        },
+        async getTestFiles() {
+          const spec = await ctx.globTestSpecifications()
+          return spec.map(spec => [
+            {
+              name: spec.project.config.name,
+              root: spec.project.config.root,
+            },
+            spec.moduleId,
+            { pool: spec.pool },
+          ])
         },
       },
       {
         post: msg => ws.send(msg),
         on: fn => ws.on('message', fn),
-        eventNames: ['onUserConsoleLog', 'onFinished', 'onCollected'],
-        serialize: stringify,
+        eventNames: [
+          'onUserConsoleLog',
+          'onFinished',
+          'onFinishedReportCoverage',
+          'onCollected',
+          'onTaskUpdate',
+        ],
+        serialize: (data: any) => stringify(data, stringifyReplace),
         deserialize: parse,
+        onTimeoutError(functionName) {
+          throw new Error(`[vitest-api]: Timeout calling "${functionName}"`)
+        },
       },
     )
 
@@ -131,49 +150,75 @@ export function setup(vitestOrWorkspace: Vitest | WorkspaceProject, server?: Vit
   ctx.reporters.push(new WebSocketReporter(ctx, wss, clients))
 }
 
-class WebSocketReporter implements Reporter {
+export class WebSocketReporter implements Reporter {
   constructor(
     public ctx: Vitest,
     public wss: WebSocketServer,
-    public clients: Map<WebSocket, BirpcReturn<WebSocketEvents>>,
+    public clients: Map<WebSocket, WebSocketRPC>,
   ) {}
 
   onCollected(files?: File[]) {
-    if (this.clients.size === 0)
+    if (this.clients.size === 0) {
       return
+    }
     this.clients.forEach((client) => {
-      client.onCollected?.(files)
+      client.onCollected?.(files)?.catch?.(noop)
+    })
+  }
+
+  onSpecsCollected(specs?: SerializedTestSpecification[] | undefined): Awaitable<void> {
+    if (this.clients.size === 0) {
+      return
+    }
+    this.clients.forEach((client) => {
+      client.onSpecsCollected?.(specs)?.catch?.(noop)
     })
   }
 
   async onTaskUpdate(packs: TaskResultPack[]) {
-    if (this.clients.size === 0)
+    if (this.clients.size === 0) {
       return
+    }
 
-    packs.forEach(([, result]) => {
-      // TODO remove after "error" deprecation is removed
-      if (result?.error && !isPrimitive(result.error))
-        result.error.stacks = parseErrorStacktrace(result.error)
+    packs.forEach(([taskId, result]) => {
+      const task = this.ctx.state.idMap.get(taskId)
+      const isBrowser = task && task.file.pool === 'browser'
+
       result?.errors?.forEach((error) => {
-        if (!isPrimitive(error))
+        if (isPrimitive(error)) {
+          return
+        }
+
+        if (isBrowser) {
+          const project = this.ctx.getProjectByName(task!.file.projectName || '')
+          error.stacks = project.browser?.parseErrorStacktrace(error)
+        }
+        else {
           error.stacks = parseErrorStacktrace(error)
+        }
       })
     })
 
     this.clients.forEach((client) => {
-      client.onTaskUpdate?.(packs)
+      client.onTaskUpdate?.(packs)?.catch?.(noop)
     })
   }
 
-  onFinished(files?: File[] | undefined) {
+  onFinished(files: File[], errors: unknown[]) {
     this.clients.forEach((client) => {
-      client.onFinished?.(files)
+      client.onFinished?.(files, errors)?.catch?.(noop)
+    })
+  }
+
+  onFinishedReportCoverage() {
+    this.clients.forEach((client) => {
+      client.onFinishedReportCoverage?.()?.catch?.(noop)
     })
   }
 
   onUserConsoleLog(log: UserConsoleLog) {
     this.clients.forEach((client) => {
-      client.onUserConsoleLog?.(log)
+      client.onUserConsoleLog?.(log)?.catch?.(noop)
     })
   }
 }

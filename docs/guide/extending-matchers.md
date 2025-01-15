@@ -23,18 +23,18 @@ expect.extend({
 })
 ```
 
-If you are using TypeScript, you can extend default Matchers interface in an ambient declaration file (e.g: `vitest.d.ts`) with the code below:
+If you are using TypeScript, you can extend default `Assertion` interface in an ambient declaration file (e.g: `vitest.d.ts`) with the code below:
 
 ```ts
+import 'vitest'
+
 interface CustomMatchers<R = unknown> {
-  toBeFoo(): R
+  toBeFoo: () => R
 }
 
-declare namespace Vi {
-  interface Assertion extends CustomMatchers {}
+declare module 'vitest' {
+  interface Assertion<T = any> extends CustomMatchers<T> {}
   interface AsymmetricMatchersContaining extends CustomMatchers {}
-
-  // Note: augmenting jest.Matchers interface will also work.
 }
 ```
 
@@ -45,7 +45,7 @@ Don't forget to include the ambient declaration file in your `tsconfig.json`.
 The return value of a matcher should be compatible with the following interface:
 
 ```ts
-interface MatcherResult {
+interface ExpectationResult {
   pass: boolean
   message: () => string
   // If you pass these, they will automatically appear inside a diff when

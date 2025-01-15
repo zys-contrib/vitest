@@ -1,21 +1,29 @@
-export type ChainableFunction<T extends string, Args extends any[], R = any, E = {}> = {
-  (...args: Args): R
+export type ChainableFunction<
+  T extends string,
+  F extends (...args: any) => any,
+  C = object,
+> = F & {
+  [x in T]: ChainableFunction<T, F, C>;
 } & {
-  [x in T]: ChainableFunction<T, Args, R, E>
-} & {
-  fn: (this: Record<T, boolean | undefined>, ...args: Args) => R
-} & E
+  fn: (this: Record<T, any>, ...args: Parameters<F>) => ReturnType<F>
+} & C
 
-export function createChainable<T extends string, Args extends any[], R = any, E = {}>(
+export function createChainable<T extends string, Args extends any[], R = any>(
   keys: T[],
-  fn: (this: Record<T, boolean | undefined>, ...args: Args) => R,
-): ChainableFunction<T, Args, R, E> {
-  function create(context: Record<T, boolean | undefined>) {
+  fn: (this: Record<T, any>, ...args: Args) => R,
+): ChainableFunction<T, (...args: Args) => R> {
+  function create(context: Record<T, any>) {
     const chain = function (this: any, ...args: Args) {
       return fn.apply(context, args)
     }
     Object.assign(chain, fn)
     chain.withContext = () => chain.bind(context)
+    chain.setContext = (key: T, value: any) => {
+      context[key] = value
+    }
+    chain.mergeContext = (ctx: Record<T, any>) => {
+      Object.assign(context, ctx)
+    }
     for (const key of keys) {
       Object.defineProperty(chain, key, {
         get() {

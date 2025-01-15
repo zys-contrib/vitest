@@ -15,11 +15,13 @@ To develop and test `vitest` package:
 
 1. Run `pnpm install` in `vitest`'s root folder
 
-2. Run `pnpm run dev` to build sources in watch mode
+2. Run `pnpm run build` to build all monorepo packages
+  - after this, you can use `pnpm run dev` to rebuild packages as you modify code
 
 3. Run
    - `pnpm run test` to run core tests
-   - `pnpm run test:all` to run all the suite
+   - `pnpm run test:ci` to run all the suite
+   - `cd test/(dir) && pnpm run test` to run a specific test suite
 
 > 💡 If you use VS Code, you can hit `⇧ ⌘ B` or `Ctrl + Shift + B` to launch all the necessary dev tasks.
 
@@ -58,6 +60,12 @@ You may wish to test your locally-modified copy of Vitest against another packag
 
 And re-run `pnpm install` to link the package.
 
+Add a `.npmrc` file with following line next to the `package.json`:
+
+```sh
+VITE_NODE_DEPS_MODULE_DIRECTORIES=/node_modules/,/packages/
+```
+
 ## Pull Request Guidelines
 
 - Checkout a topic branch from a base branch, e.g. `main`, and merge back against that branch.
@@ -80,6 +88,50 @@ And re-run `pnpm install` to link the package.
 - Commit messages must follow the [commit message convention](./.github/commit-convention.md) so that changelogs can be automatically generated.
 
 - Use `pnpm run lint:fix` to format files according to the project guidelines.
+
+## Maintenance Guidelines
+
+> The following section is mostly for maintainers who have commit access, but it's helpful to go through if you intend to make non-trivial contributions to the codebase.
+
+### Issue Triaging Workflow
+
+```mermaid
+flowchart TD
+    start{Followed issue\ntemplate?}
+    start --NO--> close1[Close and ask to\nfollow template]
+    start --YES--> dupe{Is duplicate?}
+    dupe --YES--> close2[Close and point\nto duplicate]
+    dupe --NO--> repro{Has proper\nreproduction?}
+    repro --NO--> close3[Label: 'needs reproduction'\nbot will auto close if no update\nhas been made in 3 days]
+    repro --YES--> real{Is actually a bug?}
+    real --NO--> intended{Is the intended\nbehaviour?}
+    intended --YES--> explain[Explain and close\npoint to docs if needed]
+    intended --NO--> open[Keep open for discussion\nRemove 'pending triage' label]
+    real --YES--> real2["1. Remove 'pending triage' label\n2. Add related feature label if\napplicable (e.g. 'feat: browser')\n3. Add priority and meta labels (see below)"]
+    real2 --> unusable{Does the\nbug make Vitest\nunusable?}
+    unusable --YES--> maj{Does the bug\naffect the majority\nof Vitest users?}
+    maj --YES--> p5[p5: urgent]
+    maj --NO--> p4[p4: important]
+    unusable --NO--> workarounds{Are there\nworkarounds for\nthe bug?}
+    workarounds --YES--> p2[p2: edge case\nhas workaround]
+    workarounds --NO--> p3[p3: minor bug]
+```
+
+### Pull Request Review Workflow
+
+```mermaid
+flowchart TD
+    start{Bug fix\nor\nfeature}
+    start --BUG FIX--> strict_bug{"Is a 'strict fix'\ni.e. fixes an obvious\noversight with no\nside effects"}
+    start --FEATURE--> feature[- Discuss feature necessity\n- Is this the best way to address the need\n- Review code quality\n- Add feature labels\n- Approve if you feel strongly\nthat the feature is needed]
+    feature --> merge
+    strict_bug --YES--> strict[- Verify the fix locally\n- Review code quality\n- Require test case if applicable\n- Request changes if necessary]
+    strict_bug --NO--> non_strict[- Discuss the potential side\neffects of the fix, e.g.\n- Could it introduce implicit\nbehavior changes in other\ncases?\n- Does it introduce too much\nchanges?]
+    non_strict --> label["Add priority labels\n(see issue triaging workflow)"]
+    strict --> label
+    label --> approve
+    approve --> merge["Merge if approved by 2 or\nmore team members\n- Use 'Squash and Merge'\n- Edit commit message to follow\nconvention\n- In commit message body, list\nrelevant issues being fixed\ne.g. 'fix #1234, fix #1235'"]
+```
 
 ## Notes on Dependencies
 

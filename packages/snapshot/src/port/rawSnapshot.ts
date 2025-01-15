@@ -14,9 +14,12 @@ export interface RawSnapshot extends RawSnapshotInfo {
 export async function saveRawSnapshots(
   environment: SnapshotEnvironment,
   snapshots: Array<RawSnapshot>,
-) {
-  await Promise.all(snapshots.map(async (snap) => {
-    if (!snap.readonly)
-      await environment.saveSnapshotFile(snap.file, snap.snapshot)
-  }))
+): Promise<void> {
+  await Promise.all(
+    snapshots.map(async (snap) => {
+      if (!snap.readonly) {
+        await environment.saveSnapshotFile(snap.file, snap.snapshot)
+      }
+    }),
+  )
 }

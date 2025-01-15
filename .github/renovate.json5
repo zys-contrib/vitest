@@ -1,16 +1,15 @@
 {
-  "extends": ["config:base", "schedule:weekly"],
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:base", "schedule:weekly", "group:allNonMajor"],
   "labels": ["dependencies"],
-  "pin": false,
   "rangeStrategy": "bump",
-  "node": false,
   "packageRules": [
     {
-      "depTypeList": ["peerDependencies"],
-      "enabled": false
+      "groupName": "Eslint packages",
+      "matchPackageNames": ["/eslint/"]
     },
     {
-      "packageNames": ["node"],
+      "depTypeList": ["peerDependencies"],
       "enabled": false
     },
     {
@@ -23,38 +22,25 @@
       ],
       "groupName": "all non-major examples dependencies",
       "groupSlug": "all-minor-patch-examples"
-    },
-    {
-      "excludePackagePatterns": [
-        "@vitest/test-"
-      ],
-      "matchUpdateTypes": [
-        "minor",
-        "patch"
-      ],
-      "groupName": "all non-major dependencies",
-      "groupSlug": "all-minor-patch"
     }
   ],
   "ignoreDeps": [
-    // wait for ecosystem to upgrade to React v18
-    "@testing-library/react",
-    "@testing-library/user-event",
-    // TODO: migrate
-    "pretty-format",
-    // TODO: vite-plugin-pwa issue
-    "esno",
-    // user can install any version
+    // manually bumping
+    "node",
     "vite",
-    // TODO: wait for Vite 4 to upgrade Rollup
-    "rollup",
-    "@rollup/plugin-alias",
-    "@rollup/plugin-commonjs",
-    "@rollup/plugin-json",
-    "@rollup/plugin-node-resolve",
-    "rollup-plugin-dts",
-    "rollup-plugin-esbuild",
-    "rollup-plugin-license",
-    "source-map"
+    // bumping breaks coverage
+    // https://github.com/vitest-dev/vitest/actions/runs/12121857184/job/33793728382?pr=6920
+    "vue",
+    // we patch these packages
+    "@types/chai",
+    "@sinonjs/fake-timers",
+    "cac",
+    // Pinned due to https://github.com/vitest-dev/vitest/issues/4710
+    "log-update",
+    // Pinned because it requires "node" condition in the new version
+    // But we intentionally build Vitest ambiguously
+    "find-up",
+    // Transitive dependency that we patch
+    "acorn"
   ]
 }

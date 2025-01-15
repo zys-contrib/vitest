@@ -1,5 +1,6 @@
 {
   "name": "@vitest/test-vite-node",
+  "type": "module",
   "private": true,
   "scripts": {
     "test": "vitest",
@@ -9,7 +10,8 @@
     "debug": "node --inspect-brk ../../packages/vite-node/dist/cli.cjs"
   },
   "devDependencies": {
-    "execa": "^6.1.0",
+    "@types/inquirer": "^9.0.3",
+    "inquirer": "^9.2.7",
     "vite-node": "workspace:*",
     "vitest": "workspace:*"
   }

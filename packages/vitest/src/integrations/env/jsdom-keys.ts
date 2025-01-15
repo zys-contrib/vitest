@@ -115,6 +115,7 @@ const LIVING_KEYS = [
   'StorageEvent',
   'ProgressEvent',
   'PageTransitionEvent',
+  'SubmitEvent',
   'UIEvent',
   'FocusEvent',
   'InputEvent',
@@ -162,20 +163,34 @@ const LIVING_KEYS = [
   'Headers',
   'AbortController',
   'AbortSignal',
+
+  'Uint8Array',
+  'Uint16Array',
+  'Uint32Array',
+  'Uint8ClampedArray',
+  'Int8Array',
+  'Int16Array',
+  'Int32Array',
+  'Float32Array',
+  'Float64Array',
   'ArrayBuffer',
+  'DOMRectReadOnly',
+  'DOMRect',
 
   // not specified in docs, but is available
   'Image',
   'Audio',
   'Option',
+
+  'CSS',
 ]
 
 const OTHER_KEYS = [
   'addEventListener',
   'alert',
-  'atob',
+  // 'atob',
   'blur',
-  'btoa',
+  // 'btoa',
   'cancelAnimationFrame',
   /* 'clearInterval', */
   /* 'clearTimeout', */

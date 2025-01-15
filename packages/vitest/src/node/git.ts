@@ -1,6 +1,6 @@
+import type { Output } from 'tinyexec'
 import { resolve } from 'pathe'
-import { execa } from 'execa'
-import type { ExecaReturnValue } from 'execa'
+import { x } from 'tinyexec'
 
 export interface GitOptions {
   changedSince?: string | boolean
@@ -11,13 +11,11 @@ export class VitestGit {
 
   constructor(private cwd: string) {}
 
-  private async resolveFilesWithGitCommand(
-    args: string[],
-  ): Promise<string[]> {
-    let result: ExecaReturnValue
+  private async resolveFilesWithGitCommand(args: string[]): Promise<string[]> {
+    let result: Output
 
     try {
-      result = await execa('git', args, { cwd: this.root })
+      result = await x('git', args, { nodeOptions: { cwd: this.root } })
     }
     catch (e: any) {
       e.message = e.stderr
@@ -33,8 +31,9 @@ export class VitestGit {
 
   async findChangedFiles(options: GitOptions) {
     const root = await this.getRoot(this.cwd)
-    if (!root)
+    if (!root) {
       return null
+    }
 
     this.root = root
 
@@ -55,35 +54,33 @@ export class VitestGit {
   }
 
   private getFilesSince(hash: string) {
-    return this.resolveFilesWithGitCommand(
-      ['diff', '--name-only', `${hash}...HEAD`],
-    )
+    return this.resolveFilesWithGitCommand([
+      'diff',
+      '--name-only',
+      `${hash}...HEAD`,
+    ])
   }
 
   private getStagedFiles() {
-    return this.resolveFilesWithGitCommand(
-      ['diff', '--cached', '--name-only'],
-    )
+    return this.resolveFilesWithGitCommand(['diff', '--cached', '--name-only'])
   }
 
   private getUnstagedFiles() {
-    return this.resolveFilesWithGitCommand(
-      [
-        'ls-files',
-        '--other',
-        '--modified',
-        '--exclude-standard',
-      ],
-    )
+    return this.resolveFilesWithGitCommand([
+      'ls-files',
+      '--other',
+      '--modified',
+      '--exclude-standard',
+    ])
   }
 
   async getRoot(cwd: string) {
-    const options = ['rev-parse', '--show-cdup']
+    const args = ['rev-parse', '--show-cdup']
 
     try {
-      const result = await execa('git', options, { cwd })
+      const result = await x('git', args, { nodeOptions: { cwd } })
 
-      return resolve(cwd, result.stdout)
+      return resolve(cwd, result.stdout.trim())
     }
     catch {
       return null

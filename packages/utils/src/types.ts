@@ -3,10 +3,9 @@ export type Nullable<T> = T | null | undefined
 export type Arrayable<T> = T | Array<T>
 export type ArgumentsType<T> = T extends (...args: infer U) => any ? U : never
 
-export type MergeInsertions<T> =
-  T extends object
-    ? { [K in keyof T]: MergeInsertions<T[K]> }
-    : T
+export type MergeInsertions<T> = T extends object
+  ? { [K in keyof T]: MergeInsertions<T[K]> }
+  : T
 
 export type DeepMerge<F, S> = MergeInsertions<{
   [K in keyof F | keyof S]: K extends keyof S & keyof F
@@ -18,7 +17,9 @@ export type DeepMerge<F, S> = MergeInsertions<{
         : never;
 }>
 
-export type MutableArray<T extends readonly any[]> = { -readonly [k in keyof T]: T[k] }
+export type MutableArray<T extends readonly any[]> = {
+  -readonly [k in keyof T]: T[k];
+}
 
 export interface Constructable {
   new (...args: any[]): any
@@ -31,8 +32,29 @@ export interface ParsedStack {
   column: number
 }
 
-export interface ErrorWithDiff extends Error {
-  name: string
+export interface SerializedError {
+  message: string
+  stack?: string
+  name?: string
+  stacks?: ParsedStack[]
+  cause?: SerializedError
+  [key: string]: unknown
+}
+
+export interface TestError extends SerializedError {
+  cause?: TestError
+  diff?: string
+  actual?: string
+  expected?: string
+}
+
+/**
+ * @deprecated Use `TestError` instead
+ */
+export interface ErrorWithDiff {
+  message: string
+  name?: string
+  cause?: unknown
   nameStr?: string
   stack?: string
   stackStr?: string
@@ -44,4 +66,5 @@ export interface ErrorWithDiff extends Error {
   type?: string
   frame?: string
   diff?: string
+  codeFrame?: string
 }

@@ -1,61 +1,84 @@
-import c from 'picocolors'
-import type { UserConsoleLog } from '../../types/general'
+import type { Vitest } from '../core'
+import type { TestSpecification } from '../spec'
+import type { BaseOptions } from './base'
+import type { ReportedHookContext, TestCase, TestModule } from './reported-tasks'
 import { BaseReporter } from './base'
-import type { ListRendererOptions } from './renderers/listRenderer'
-import { createListRenderer } from './renderers/listRenderer'
+import { SummaryReporter } from './summary'
+
+export interface DefaultReporterOptions extends BaseOptions {
+  summary?: boolean
+}
 
 export class DefaultReporter extends BaseReporter {
-  renderer?: ReturnType<typeof createListRenderer>
-  rendererOptions: ListRendererOptions = {} as any
+  private options: DefaultReporterOptions
+  private summary?: SummaryReporter
 
-  async onTestRemoved(trigger?: string) {
-    await this.stopListRender()
-    this.ctx.logger.clearScreen(c.yellow('Test removed...') + (trigger ? c.dim(` [ ${this.relative(trigger)} ]\n`) : ''), true)
-    const files = this.ctx.state.getFiles(this.watchFilters)
-    createListRenderer(files, this.rendererOptions).stop()
-    this.ctx.logger.log()
-    await super.reportSummary(files)
-    super.onWatcherStart()
-  }
+  constructor(options: DefaultReporterOptions = {}) {
+    super(options)
+    this.options = {
+      summary: true,
+      ...options,
+    }
 
-  onCollected() {
-    if (this.isTTY) {
-      this.rendererOptions.logger = this.ctx.logger
-      this.rendererOptions.showHeap = this.ctx.config.logHeapUsage
-      this.rendererOptions.mode = this.mode
-      const files = this.ctx.state.getFiles(this.watchFilters)
-      if (!this.renderer)
-        this.renderer = createListRenderer(files, this.rendererOptions).start()
-      else
-        this.renderer.update(files)
+    if (!this.isTTY) {
+      this.options.summary = false
+    }
+
+    if (this.options.summary) {
+      this.summary = new SummaryReporter()
     }
   }
 
-  async onFinished(files = this.ctx.state.getFiles(), errors = this.ctx.state.getUnhandledErrors()) {
-    await this.stopListRender()
-    this.ctx.logger.log()
-    await super.onFinished(files, errors)
+  onTestRunStart(specifications: ReadonlyArray<TestSpecification>) {
+    this.summary?.onTestRunStart(specifications)
   }
 
-  async onWatcherStart(files = this.ctx.state.getFiles(), errors = this.ctx.state.getUnhandledErrors()) {
-    await this.stopListRender()
-    await super.onWatcherStart(files, errors)
+  onTestModuleQueued(file: TestModule) {
+    this.summary?.onTestModuleQueued(file)
   }
 
-  async stopListRender() {
-    await this.renderer?.stop()
-    this.renderer = undefined
+  onTestModuleCollected(module: TestModule) {
+    this.summary?.onTestModuleCollected(module)
   }
 
-  async onWatcherRerun(files: string[], trigger?: string) {
-    await this.stopListRender()
-    await super.onWatcherRerun(files, trigger)
+  onTestModuleEnd(module: TestModule) {
+    this.summary?.onTestModuleEnd(module)
   }
 
-  onUserConsoleLog(log: UserConsoleLog) {
-    if (!this.shouldLog(log))
-      return
-    this.renderer?.clear()
-    super.onUserConsoleLog(log)
+  onTestCaseReady(test: TestCase) {
+    this.summary?.onTestCaseReady(test)
+  }
+
+  onTestCaseResult(test: TestCase) {
+    this.summary?.onTestCaseResult(test)
+  }
+
+  onHookStart(hook: ReportedHookContext) {
+    this.summary?.onHookStart(hook)
+  }
+
+  onHookEnd(hook: ReportedHookContext) {
+    this.summary?.onHookEnd(hook)
+  }
+
+  onInit(ctx: Vitest) {
+    super.onInit(ctx)
+    this.summary?.onInit(ctx, { verbose: this.verbose })
+  }
+
+  onPathsCollected(paths: string[] = []) {
+    if (this.isTTY) {
+      if (this.renderSucceed === undefined) {
+        this.renderSucceed = !!this.renderSucceed
+      }
+
+      if (this.renderSucceed !== true) {
+        this.renderSucceed = paths.length <= 1
+      }
+    }
+  }
+
+  onTestRunEnd() {
+    this.summary?.onTestRunEnd()
   }
 }

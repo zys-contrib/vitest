@@ -1,21 +1,45 @@
+import type {
+  ModuleGraphData,
+  RunnerTestFile,
+  SerializedConfig,
+} from 'vitest'
+import type { HTMLOptions, Vitest } from 'vitest/node'
+import type { Reporter } from 'vitest/reporters'
 import { promises as fs } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { gzip, constants as zlibConstants } from 'node:zlib'
-import { basename, dirname, relative, resolve } from 'pathe'
-import c from 'picocolors'
-import fg from 'fast-glob'
 import { stringify } from 'flatted'
-// eslint-disable-next-line no-restricted-imports
-import type { File, ModuleGraphData, Reporter, ResolvedConfig, Vitest } from 'vitest'
+import { basename, dirname, relative, resolve } from 'pathe'
+import { globSync } from 'tinyglobby'
+import c from 'tinyrainbow'
 import { getModuleGraph } from '../../vitest/src/utils/graph'
-import { getOutputFile } from '../../vitest/src/utils/config-helpers'
+
+interface PotentialConfig {
+  outputFile?: string | Partial<Record<string, string>>
+}
+
+function getOutputFile(config: PotentialConfig | undefined) {
+  if (!config?.outputFile) {
+    return
+  }
+
+  if (typeof config.outputFile === 'string') {
+    return config.outputFile
+  }
+
+  return config.outputFile.html
+}
 
 interface HTMLReportData {
   paths: string[]
-  files: File[]
-  config: ResolvedConfig
-  moduleGraph: Record<string, ModuleGraphData>
+  files: RunnerTestFile[]
+  config: SerializedConfig
+  projects: string[]
+  moduleGraph: Record<string, Record<string, ModuleGraphData>>
+  unhandledErrors: unknown[]
+  // filename -> source
+  sources: Record<string, string>
 }
 
 const distDir = resolve(fileURLToPath(import.meta.url), '../../dist')
@@ -24,6 +48,11 @@ export default class HTMLReporter implements Reporter {
   start = 0
   ctx!: Vitest
   reportUIPath!: string
+  options: HTMLOptions
+
+  constructor(options: HTMLOptions) {
+    this.options = options
+  }
 
   async onInit(ctx: Vitest) {
     this.ctx = ctx
@@ -34,19 +63,44 @@ export default class HTMLReporter implements Reporter {
     const result: HTMLReportData = {
       paths: this.ctx.state.getPaths(),
       files: this.ctx.state.getFiles(),
-      config: this.ctx.config,
+      config: this.ctx.getRootProject().serializedConfig,
+      unhandledErrors: this.ctx.state.getUnhandledErrors(),
+      projects: this.ctx.resolvedProjects.map(p => p.name),
       moduleGraph: {},
+      sources: {},
     }
     await Promise.all(
       result.files.map(async (file) => {
-        result.moduleGraph[file.filepath] = await getModuleGraph(this.ctx, file.filepath)
+        const projectName = file.projectName || ''
+        const resolvedConfig = this.ctx.getProjectByName(projectName).config
+        const browser = resolvedConfig.browser.enabled && resolvedConfig.browser.ui
+        result.moduleGraph[projectName] ??= {}
+        result.moduleGraph[projectName][file.filepath] = await getModuleGraph(
+          this.ctx,
+          projectName,
+          file.filepath,
+          browser,
+        )
+        if (!result.sources[file.filepath]) {
+          try {
+            result.sources[file.filepath] = await fs.readFile(file.filepath, {
+              encoding: 'utf-8',
+            })
+          }
+          catch {
+            // just ignore
+          }
+        }
       }),
     )
     await this.writeReport(stringify(result))
   }
 
   async writeReport(report: string) {
-    const htmlFile = getOutputFile(this.ctx.config, 'html') || 'html/index.html'
+    const htmlFile
+      = this.options.outputFile
+      || getOutputFile(this.ctx.config)
+      || 'html/index.html'
     const htmlFileName = basename(htmlFile)
     const htmlDir = resolve(this.ctx.config.root, dirname(htmlFile))
 
@@ -61,22 +115,35 @@ export default class HTMLReporter implements Reporter {
     await fs.writeFile(metaFile, data, 'base64')
     const ui = resolve(distDir, 'client')
     // copy ui
-    const files = fg.sync('**/*', { cwd: ui })
-    await Promise.all(files.map(async (f) => {
-      if (f === 'index.html') {
-        const html = await fs.readFile(resolve(ui, f), 'utf-8')
-        const filePath = relative(htmlDir, metaFile)
-        await fs.writeFile(
-          resolve(htmlDir, htmlFileName),
-          html.replace('<!-- !LOAD_METADATA! -->', `<script>window.METADATA_PATH="${filePath}"</script>`),
-        )
-      }
-      else {
-        await fs.copyFile(resolve(ui, f), resolve(htmlDir, f))
-      }
-    }))
+    const files = globSync(['**/*'], { cwd: ui, expandDirectories: false })
+    await Promise.all(
+      files.map(async (f) => {
+        if (f === 'index.html') {
+          const html = await fs.readFile(resolve(ui, f), 'utf-8')
+          const filePath = relative(htmlDir, metaFile)
+          await fs.writeFile(
+            resolve(htmlDir, htmlFileName),
+            html.replace(
+              '<!-- !LOAD_METADATA! -->',
+              `<script>window.METADATA_PATH="${filePath}"</script>`,
+            ),
+          )
+        }
+        else {
+          await fs.copyFile(resolve(ui, f), resolve(htmlDir, f))
+        }
+      }),
+    )
 
-    this.ctx.logger.log(`${c.bold(c.inverse(c.magenta(' HTML ')))} ${c.magenta('Report is generated')}`)
-    this.ctx.logger.log(`${c.dim('       You can run ')}${c.bold(`npx vite preview --outDir ${relative(this.ctx.config.root, htmlDir)}`)}${c.dim(' to see the test results.')}`)
+    this.ctx.logger.log(
+      `${c.bold(c.inverse(c.magenta(' HTML ')))} ${c.magenta(
+        'Report is generated',
+      )}`,
+    )
+    this.ctx.logger.log(
+      `${c.dim('       You can run ')}${c.bold(
+        `npx vite preview --outDir ${relative(this.ctx.config.root, htmlDir)}`,
+      )}${c.dim(' to see the test results.')}`,
+    )
   }
 }

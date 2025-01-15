@@ -1,13 +1,24 @@
-import type { ViteHotContext } from 'vite/types/hot'
 import type { EncodedSourceMap } from '@jridgewell/trace-mapping'
+import type { ViteHotContext } from 'vite/types/hot.js'
 import type { ModuleCacheMap, ViteNodeRunner } from './client'
 
 export type Nullable<T> = T | null | undefined
 export type Arrayable<T> = T | Array<T>
+export type Awaitable<T> = T | PromiseLike<T>
 
 export interface DepsHandlingOptions {
   external?: (string | RegExp)[]
   inline?: (string | RegExp)[] | true
+  inlineFiles?: string[]
+  /**
+   * A list of directories that are considered to hold Node.js modules
+   * Have to include "/" at the start and end of the path
+   *
+   * Vite-Node checks the whole absolute path of the import, so make sure you don't include
+   * unwanted files accidentally
+   * @default ['/node_modules/']
+   */
+  moduleDirectories?: string[]
   cacheDir?: string
   /**
    * Try to guess the CJS version of a package when it's invalid ESM
@@ -21,13 +32,17 @@ export interface StartOfSourceMap {
   sourceRoot?: string
 }
 
-export type { EncodedSourceMap, DecodedSourceMap } from '@jridgewell/trace-mapping'
+export type {
+  DecodedSourceMap,
+  EncodedSourceMap,
+  SourceMapInput,
+} from '@jridgewell/trace-mapping'
 
 export interface RawSourceMap extends StartOfSourceMap {
-  version: string
+  version: number
   sources: string[]
   names: string[]
-  sourcesContent?: string[]
+  sourcesContent?: (string | null)[]
   mappings: string
 }
 
@@ -41,9 +56,15 @@ export type HotContext = Omit<ViteHotContext, 'acceptDeps' | 'decline'>
 
 export type FetchFunction = (id: string) => Promise<FetchResult>
 
-export type ResolveIdFunction = (id: string, importer?: string) => Promise<ViteNodeResolveId | null>
+export type ResolveIdFunction = (
+  id: string,
+  importer?: string
+) => Awaitable<ViteNodeResolveId | null | undefined | void>
 
-export type CreateHotContextFunction = (runner: ViteNodeRunner, url: string) => HotContext
+export type CreateHotContextFunction = (
+  runner: ViteNodeRunner,
+  url: string
+) => HotContext
 
 export interface ModuleCache {
   promise?: Promise<any>
@@ -56,6 +77,7 @@ export interface ModuleCache {
    * Module ids that imports this module
    */
   importers?: Set<string>
+  imports?: Set<string>
 }
 
 export interface ViteNodeRunnerOptions {
@@ -76,6 +98,12 @@ export interface ViteNodeResolveId {
   meta?: Record<string, any> | null
   moduleSideEffects?: boolean | 'no-treeshake' | null
   syntheticNamedExports?: boolean | string | null
+}
+
+export interface ViteNodeResolveModule {
+  external: string | null
+  id: string
+  fsPath: string
 }
 
 export interface ViteNodeServerOptions {

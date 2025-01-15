@@ -10,12 +10,12 @@ import type {
   FakeTimerWithContext,
   InstalledClock,
 } from '@sinonjs/fake-timers'
-import {
-  withGlobal,
-} from '@sinonjs/fake-timers'
-import { RealDate, mockDate, resetDate } from './date'
+import { withGlobal } from '@sinonjs/fake-timers'
+import { isChildProcess } from '../../runtime/utils'
+import { mockDate, RealDate, resetDate } from './date'
 
 export class FakeTimers {
+  private _global: typeof globalThis
   private _clock!: InstalledClock
   private _fakingTime: boolean
   private _fakingDate: boolean
@@ -36,11 +36,13 @@ export class FakeTimers {
 
     this._fakingTime = false
     this._fakeTimers = withGlobal(global)
+    this._global = global
   }
 
   clearAllTimers(): void {
-    if (this._fakingTime)
+    if (this._fakingTime) {
       this._clock.reset()
+    }
   }
 
   dispose(): void {
@@ -48,23 +50,27 @@ export class FakeTimers {
   }
 
   runAllTimers(): void {
-    if (this._checkFakeTimers())
+    if (this._checkFakeTimers()) {
       this._clock.runAll()
+    }
   }
 
   async runAllTimersAsync(): Promise<void> {
-    if (this._checkFakeTimers())
+    if (this._checkFakeTimers()) {
       await this._clock.runAllAsync()
+    }
   }
 
   runOnlyPendingTimers(): void {
-    if (this._checkFakeTimers())
+    if (this._checkFakeTimers()) {
       this._clock.runToLast()
+    }
   }
 
   async runOnlyPendingTimersAsync(): Promise<void> {
-    if (this._checkFakeTimers())
+    if (this._checkFakeTimers()) {
       await this._clock.runToLastAsync()
+    }
   }
 
   advanceTimersToNextTimer(steps = 1): void {
@@ -74,8 +80,9 @@ export class FakeTimers {
         // Fire all timers at this point: https://github.com/sinonjs/fake-timers/issues/250
         this._clock.tick(0)
 
-        if (this._clock.countTimers() === 0)
+        if (this._clock.countTimers() === 0) {
           break
+        }
       }
     }
   }
@@ -87,20 +94,29 @@ export class FakeTimers {
         // Fire all timers at this point: https://github.com/sinonjs/fake-timers/issues/250
         this._clock.tick(0)
 
-        if (this._clock.countTimers() === 0)
+        if (this._clock.countTimers() === 0) {
           break
+        }
       }
     }
   }
 
   advanceTimersByTime(msToRun: number): void {
-    if (this._checkFakeTimers())
+    if (this._checkFakeTimers()) {
       this._clock.tick(msToRun)
+    }
   }
 
   async advanceTimersByTimeAsync(msToRun: number): Promise<void> {
-    if (this._checkFakeTimers())
+    if (this._checkFakeTimers()) {
       await this._clock.tickAsync(msToRun)
+    }
+  }
+
+  advanceTimersToNextFrame(): void {
+    if (this._checkFakeTimers()) {
+      this._clock.runToFrame()
+    }
   }
 
   runAllTicks(): void {
@@ -130,12 +146,23 @@ export class FakeTimers {
     }
 
     if (!this._fakingTime) {
-      const toFake = Object.keys(this._fakeTimers.timers) as Array<keyof FakeTimerWithContext['timers']>
+      const toFake = Object.keys(this._fakeTimers.timers)
+        // Do not mock nextTick by default. It can still be mocked through userConfig.
+        .filter(
+          timer => timer !== 'nextTick',
+        ) as (keyof FakeTimerWithContext['timers'])[]
+
+      if (this._userConfig?.toFake?.includes('nextTick') && isChildProcess()) {
+        throw new Error(
+          'process.nextTick cannot be mocked inside child_process',
+        )
+      }
 
       this._clock = this._fakeTimers.install({
         now: Date.now(),
-        toFake,
         ...this._userConfig,
+        toFake: this._userConfig?.toFake || toFake,
+        ignoreMissingTimers: true,
       })
 
       this._fakingTime = true
@@ -165,14 +192,19 @@ export class FakeTimers {
   }
 
   getTimerCount(): number {
-    if (this._checkFakeTimers())
+    if (this._checkFakeTimers()) {
       return this._clock.countTimers()
+    }
 
     return 0
   }
 
   configure(config: FakeTimerInstallOpts): void {
     this._userConfig = config
+  }
+
+  isFakeTimers() {
+    return this._fakingTime
   }
 
   private _checkFakeTimers() {

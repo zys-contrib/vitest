@@ -1,21 +1,34 @@
-import { dirname, relative } from 'pathe'
 import type { UserConfig as ViteConfig, Plugin as VitePlugin } from 'vite'
+import type { TestProject } from '../project'
+import type { ResolvedConfig, UserWorkspaceConfig } from '../types/config'
+import { existsSync, readFileSync } from 'node:fs'
+import { deepMerge } from '@vitest/utils'
+import { basename, dirname, relative, resolve } from 'pathe'
 import { configDefaults } from '../../defaults'
 import { generateScopedClassName } from '../../integrations/css/css-modules'
-import { deepMerge } from '../../utils/base'
-import type { WorkspaceProject } from '../workspace'
-import type { UserWorkspaceConfig } from '../../types'
+import { createViteLogger, silenceImportViteIgnoreWarning } from '../viteLogger'
 import { CoverageTransform } from './coverageTransform'
 import { CSSEnablerPlugin } from './cssEnabler'
-import { EnvReplacerPlugin } from './envReplacer'
-import { GlobalSetupPlugin } from './globalSetup'
+import { MocksPlugins } from './mocks'
+import { NormalizeURLPlugin } from './normalizeURL'
+import { VitestOptimizer } from './optimizer'
+import { SsrReplacerPlugin } from './ssrReplacer'
+import {
+  deleteDefineConfig,
+  hijackVitePluginInject,
+  resolveFsAllow,
+} from './utils'
+import { VitestProjectResolver } from './vitestResolver'
 
 interface WorkspaceOptions extends UserWorkspaceConfig {
   root?: string
   workspacePath: string | number
 }
 
-export function WorkspaceVitestPlugin(project: WorkspaceProject, options: WorkspaceOptions) {
+export function WorkspaceVitestPlugin(
+  project: TestProject,
+  options: WorkspaceOptions,
+) {
   return <VitePlugin[]>[
     {
       name: 'vitest:project',
@@ -23,47 +36,30 @@ export function WorkspaceVitestPlugin(project: WorkspaceProject, options: Worksp
       options() {
         this.meta.watchMode = false
       },
-      // TODO: refactor so we don't have the same code here and in plugins/index.ts
       config(viteConfig) {
-        if (viteConfig.define) {
-          delete viteConfig.define['import.meta.vitest']
-          delete viteConfig.define['process.env']
-        }
-
-        const env: Record<string, any> = {}
-
-        for (const key in viteConfig.define) {
-          const val = viteConfig.define[key]
-          let replacement: any
-          try {
-            replacement = typeof val === 'string' ? JSON.parse(val) : val
-          }
-          catch {
-            // probably means it contains reference to some variable,
-            // like this: "__VAR__": "process.env.VAR"
-            continue
-          }
-          if (key.startsWith('import.meta.env.')) {
-            const envKey = key.slice('import.meta.env.'.length)
-            env[envKey] = replacement
-            delete viteConfig.define[key]
-          }
-          else if (key.startsWith('process.env.')) {
-            const envKey = key.slice('process.env.'.length)
-            env[envKey] = replacement
-            delete viteConfig.define[key]
-          }
-        }
+        const defines: Record<string, any> = deleteDefineConfig(viteConfig)
 
         const testConfig = viteConfig.test || {}
 
         const root = testConfig.root || viteConfig.root || options.root
         let name = testConfig.name
         if (!name) {
-          if (typeof options.workspacePath === 'string')
-            name = dirname(options.workspacePath).split('/').pop()
-          else
+          if (typeof options.workspacePath === 'string') {
+            // if there is a package.json, read the name from it
+            const dir = options.workspacePath.endsWith('/')
+              ? options.workspacePath.slice(0, -1)
+              : dirname(options.workspacePath)
+            const pkgJsonPath = resolve(dir, 'package.json')
+            if (existsSync(pkgJsonPath)) {
+              name = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')).name
+            }
+            if (typeof name !== 'string' || !name) {
+              name = basename(dir)
+            }
+          }
+          else {
             name = options.workspacePath.toString()
+          }
         }
 
         const config: ViteConfig = {
@@ -74,69 +70,100 @@ export function WorkspaceVitestPlugin(project: WorkspaceProject, options: Worksp
             mainFields: [],
             alias: testConfig.alias,
             conditions: ['node'],
-            // eslint-disable-next-line @typescript-eslint/prefer-ts-expect-error
-            // @ts-ignore we support Vite ^3.0, but browserField is available in Vite ^3.2
-            browserField: false,
           },
-          esbuild: {
-            sourcemap: 'external',
-
-            // Enables using ignore hint for coverage providers with @preserve keyword
-            legalComments: 'inline',
-          },
+          esbuild: viteConfig.esbuild === false
+            ? false
+            : {
+                // Lowest target Vitest supports is Node18
+                target: viteConfig.esbuild?.target || 'node18',
+                sourcemap: 'external',
+                // Enables using ignore hint for coverage providers with @preserve keyword
+                legalComments: 'inline',
+              },
           server: {
             // disable watch mode in workspaces,
             // because it is handled by the top-level watcher
-            watch: {
-              ignored: ['**/*'],
-              depth: 0,
-              persistent: false,
-            },
+            watch: null,
             open: false,
             hmr: false,
+            ws: false,
             preTransformRequests: false,
+            middlewareMode: true,
+            fs: {
+              allow: resolveFsAllow(
+                project.vitest.config.root,
+                project.vitest.server.config.configFile,
+              ),
+            },
+          },
+          // eslint-disable-next-line ts/ban-ts-comment
+          // @ts-ignore Vite 6 compat
+          environments: {
+            ssr: {
+              resolve: {
+                // by default Vite resolves `module` field, which not always a native ESM module
+                // setting this option can bypass that and fallback to cjs version
+                mainFields: [],
+                conditions: ['node'],
+              },
+            },
           },
           test: {
-            env,
             name,
           },
-        }
+        };
 
-        const classNameStrategy = (typeof testConfig.css !== 'boolean' && testConfig.css?.modules?.classNameStrategy) || 'stable'
+        (config.test as ResolvedConfig).defines = defines
+
+        const classNameStrategy
+          = (typeof testConfig.css !== 'boolean'
+            && testConfig.css?.modules?.classNameStrategy)
+          || 'stable'
 
         if (classNameStrategy !== 'scoped') {
           config.css ??= {}
           config.css.modules ??= {}
           if (config.css.modules) {
-            config.css.modules.generateScopedName = (name: string, filename: string) => {
+            config.css.modules.generateScopedName = (
+              name: string,
+              filename: string,
+            ) => {
               const root = project.config.root
-              return generateScopedClassName(classNameStrategy, name, relative(root, filename))!
+              return generateScopedClassName(
+                classNameStrategy,
+                name,
+                relative(root, filename),
+              )!
             }
           }
         }
+        config.customLogger = createViteLogger(
+          project.logger,
+          viteConfig.logLevel || 'warn',
+          {
+            allowClearScreen: false,
+          },
+        )
+        config.customLogger = silenceImportViteIgnoreWarning(config.customLogger)
 
         return config
       },
+      configResolved(viteConfig) {
+        hijackVitePluginInject(viteConfig)
+      },
       async configureServer(server) {
-        try {
-          const options = deepMerge(
-            {},
-            configDefaults,
-            server.config.test || {},
-          )
-          await project.setServer(options, server)
-        }
-        catch (err) {
-          await project.ctx.logger.printError(err, true)
-          process.exit(1)
-        }
+        const options = deepMerge({}, configDefaults, server.config.test || {})
+        await project._configureServer(options, server)
 
         await server.watcher.close()
       },
     },
-    EnvReplacerPlugin(),
+    SsrReplacerPlugin(),
     ...CSSEnablerPlugin(project),
     CoverageTransform(project.ctx),
-    GlobalSetupPlugin(project, project.ctx.logger),
+    ...MocksPlugins(),
+    VitestProjectResolver(project.ctx),
+    VitestOptimizer(),
+    NormalizeURLPlugin(),
   ]
 }

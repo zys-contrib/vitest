@@ -1,47 +1,65 @@
 import fs from 'node:fs'
-import { builtinModules } from 'node:module'
+import { builtinModules, createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { dirname, join, normalize, relative, resolve } from 'pathe'
-import esbuild from 'rollup-plugin-esbuild'
-import dts from 'rollup-plugin-dts'
-import nodeResolve from '@rollup/plugin-node-resolve'
 import commonjs from '@rollup/plugin-commonjs'
 import json from '@rollup/plugin-json'
-import license from 'rollup-plugin-license'
-import c from 'picocolors'
+import nodeResolve from '@rollup/plugin-node-resolve'
 import fg from 'fast-glob'
+import { dirname, join, normalize, resolve } from 'pathe'
 import { defineConfig } from 'rollup'
+import dts from 'rollup-plugin-dts'
+import esbuild from 'rollup-plugin-esbuild'
+import license from 'rollup-plugin-license'
+import c from 'tinyrainbow'
 
-import pkg from './package.json' assert { type: 'json' }
+const require = createRequire(import.meta.url)
+const pkg = require('./package.json')
 
-const entries = [
-  'src/index.ts',
-  'src/node/cli.ts',
-  'src/node/cli-wrapper.ts',
-  'src/node.ts',
-  'src/suite.ts',
-  'src/browser.ts',
-  'src/runners.ts',
-  'src/environments.ts',
-  'src/runtime/worker.ts',
-  'src/runtime/child.ts',
-  'src/runtime/loader.ts',
-  'src/runtime/entry.ts',
-  'src/integrations/spy.ts',
-  'src/coverage.ts',
-  'src/public/utils.ts',
-]
+const entries = {
+  'path': 'src/paths.ts',
+  'index': 'src/public/index.ts',
+  'cli': 'src/node/cli.ts',
+  'node': 'src/public/node.ts',
+  'suite': 'src/public/suite.ts',
+  'browser': 'src/public/browser.ts',
+  'runners': 'src/public/runners.ts',
+  'environments': 'src/public/environments.ts',
+  'mocker': 'src/public/mocker.ts',
+  'spy': 'src/integrations/spy.ts',
+  'coverage': 'src/public/coverage.ts',
+  'utils': 'src/public/utils.ts',
+  'execute': 'src/public/execute.ts',
+  'reporters': 'src/public/reporters.ts',
+  // TODO: advanced docs
+  'workers': 'src/public/workers.ts',
+
+  // for performance reasons we bundle them separately so we don't import everything at once
+  'worker': 'src/runtime/worker.ts',
+  'workers/forks': 'src/runtime/workers/forks.ts',
+  'workers/threads': 'src/runtime/workers/threads.ts',
+  'workers/vmThreads': 'src/runtime/workers/vmThreads.ts',
+  'workers/vmForks': 'src/runtime/workers/vmForks.ts',
+
+  'workers/runVmTests': 'src/runtime/runVmTests.ts',
+
+  'snapshot': 'src/public/snapshot.ts',
+}
 
 const dtsEntries = {
-  index: 'src/index.ts',
-  node: 'src/node.ts',
-  environments: 'src/environments.ts',
-  browser: 'src/browser.ts',
-  runners: 'src/runners.ts',
-  suite: 'src/suite.ts',
-  config: 'src/config.ts',
-  coverage: 'src/coverage.ts',
+  index: 'src/public/index.ts',
+  node: 'src/public/node.ts',
+  environments: 'src/public/environments.ts',
+  browser: 'src/public/browser.ts',
+  runners: 'src/public/runners.ts',
+  suite: 'src/public/suite.ts',
+  config: 'src/public/config.ts',
+  coverage: 'src/public/coverage.ts',
   utils: 'src/public/utils.ts',
+  execute: 'src/public/execute.ts',
+  reporters: 'src/public/reporters.ts',
+  mocker: 'src/public/mocker.ts',
+  workers: 'src/public/workers.ts',
+  snapshot: 'src/public/snapshot.ts',
 }
 
 const external = [
@@ -51,15 +69,21 @@ const external = [
   'worker_threads',
   'node:worker_threads',
   'node:fs',
+  'node:os',
+  'node:stream',
+  'node:vm',
   'inspector',
-  'webdriverio',
-  'safaridriver',
-  'playwright',
   'vite-node/source-map',
   'vite-node/client',
   'vite-node/server',
+  'vite-node/constants',
   'vite-node/utils',
+  '@vitest/mocker',
+  '@vitest/mocker/node',
   '@vitest/utils/diff',
+  '@vitest/utils/ast',
+  '@vitest/utils/error',
+  '@vitest/utils/source-map',
   '@vitest/runner/utils',
   '@vitest/runner/types',
   '@vitest/snapshot/environment',
@@ -75,89 +99,59 @@ const plugins = [
   json(),
   commonjs(),
   esbuild({
-    target: 'node14',
+    target: 'node18',
   }),
 ]
 
-export default ({ watch }) => defineConfig([
-  {
-    input: entries,
-    output: {
-      dir: 'dist',
-      format: 'esm',
-      chunkFileNames: (chunkInfo) => {
-        let id = chunkInfo.facadeModuleId || Object.keys(chunkInfo.moduleIds).find(i => !i.includes('node_modules') && (i.includes('src/') || i.includes('src\\')))
-        if (id) {
-          id = normalize(id)
-          const parts = Array.from(
-            new Set(relative(process.cwd(), id).split(/\//g)
-              .map(i => i.replace(/\..*$/, ''))
-              .filter(i => !['src', 'index', 'dist', 'node_modules'].some(j => i.includes(j)) && i.match(/^[\w_-]+$/))),
-          )
-          if (parts.length)
-            return `chunk-${parts.slice(-2).join('-')}.[hash].js`
-        }
-        return 'vendor-[name].[hash].js'
-      },
-    },
-    external,
-    plugins: [
-      ...plugins,
-      !watch && licensePlugin(),
-    ],
-    onwarn,
-  },
-  {
-    input: 'src/config.ts',
-    output: [
-      {
-        file: 'dist/config.cjs',
-        format: 'cjs',
-      },
-      {
-        file: 'dist/config.js',
+export default ({ watch }) =>
+  defineConfig([
+    {
+      input: entries,
+      treeshake: true,
+      output: {
+        dir: 'dist',
         format: 'esm',
+        chunkFileNames: 'chunks/[name].[hash].js',
       },
-    ],
-    external,
-    plugins,
-  },
-  {
-    input: dtsEntries,
-    output: {
-      dir: 'dist',
-      entryFileNames: chunk => `${normalize(chunk.name).replace('src/', '')}.d.ts`,
-      format: 'esm',
+      external,
+      plugins: [...plugins, !watch && licensePlugin()],
+      onwarn,
     },
-    external,
-    plugins: [
-      dts({ respectExternal: true }),
-    ],
-  },
-])
+    {
+      input: 'src/public/config.ts',
+      output: [
+        {
+          file: 'dist/config.cjs',
+          format: 'cjs',
+        },
+        {
+          file: 'dist/config.js',
+          format: 'esm',
+        },
+      ],
+      external,
+      plugins,
+    },
+    {
+      input: dtsEntries,
+      output: {
+        dir: 'dist',
+        entryFileNames: chunk =>
+          `${normalize(chunk.name).replace('src/', '')}.d.ts`,
+        format: 'esm',
+        chunkFileNames: 'chunks/[name].[hash].d.ts',
+      },
+      external,
+      plugins: [dts({ respectExternal: true })],
+    },
+  ])
 
 function licensePlugin() {
   return license({
     thirdParty(dependencies) {
       // https://github.com/rollup/rollup/blob/master/build-plugins/generate-license-file.js
       // MIT Licensed https://github.com/rollup/rollup/blob/master/LICENSE-CORE.md
-      const coreLicense = fs.readFileSync(
-        resolve(dir, '../../LICENSE'),
-      )
-      function sortLicenses(licenses) {
-        let withParenthesis = []
-        let noParenthesis = []
-        licenses.forEach((license) => {
-          if (/^\(/.test(license))
-            withParenthesis.push(license)
-
-          else
-            noParenthesis.push(license)
-        })
-        withParenthesis = withParenthesis.sort()
-        noParenthesis = noParenthesis.sort()
-        return [...noParenthesis, ...withParenthesis]
-      }
+      const coreLicense = fs.readFileSync(resolve(dir, '../../LICENSE'))
       const licenses = new Set()
       const dependencyLicenseTexts = dependencies
         .filter(({ name }) => !name?.startsWith('@vitest/'))
@@ -175,22 +169,27 @@ function licensePlugin() {
             repository,
           }) => {
             let text = `## ${name}\n`
-            if (license)
+            if (license) {
               text += `License: ${license}\n`
+            }
 
             const names = new Set()
-            if (author && author.name)
+            if (author && author.name) {
               names.add(author.name)
+            }
 
             for (const person of maintainers.concat(contributors)) {
-              if (person && person.name)
+              if (person && person.name) {
                 names.add(person.name)
+              }
             }
-            if (names.size > 0)
+            if (names.size > 0) {
               text += `By: ${Array.from(names).join(', ')}\n`
+            }
 
-            if (repository)
+            if (repository) {
               text += `Repository: ${repository.url || repository}\n`
+            }
 
             if (!licenseText) {
               try {
@@ -199,24 +198,22 @@ function licensePlugin() {
                     preserveSymlinks: false,
                   }),
                 )
-                const licenseFile = fg.sync(`${pkgDir}/LICENSE*`, {
+                const [licenseFile] = fg.sync(`${pkgDir}/LICENSE*`, {
                   caseSensitiveMatch: false,
-                })[0]
-                if (licenseFile)
+                })
+                if (licenseFile) {
                   licenseText = fs.readFileSync(licenseFile, 'utf-8')
+                }
               }
               catch {}
             }
             if (licenseText) {
-              text
-                += `\n${
-                  licenseText
-                    .trim()
-                    .replace(/(\r\n|\r)/gm, '\n')
-                    .split('\n')
-                    .map(line => `> ${line}`)
-                    .join('\n')
-                }\n`
+              text += `\n${licenseText
+                .trim()
+                .replace(/(\r\n|\r)/g, '\n')
+                .split('\n')
+                .map(line => (line ? `> ${line}` : '>'))
+                .join('\n')}\n`
             }
             licenses.add(license)
             return text
@@ -225,13 +222,10 @@ function licensePlugin() {
         .join('\n---------------------------------------\n\n')
       const licenseText
         = '# Vitest core license\n'
-        + `Vitest is released under the MIT license:\n\n${
-          coreLicense
-        }\n# Licenses of bundled dependencies\n`
+        + `Vitest is released under the MIT license:\n\n${coreLicense}\n# Licenses of bundled dependencies\n`
         + 'The published Vitest artifact additionally contains code with the following licenses:\n'
         + `${sortLicenses(licenses).join(', ')}\n\n`
-        + `# Bundled dependencies:\n${
-          dependencyLicenseTexts}`
+        + `# Bundled dependencies:\n${dependencyLicenseTexts}`
       const existingLicenseText = fs.readFileSync('LICENSE.md', 'utf8')
       if (existingLicenseText !== licenseText) {
         fs.writeFileSync('LICENSE.md', licenseText)
@@ -246,7 +240,24 @@ function licensePlugin() {
 }
 
 function onwarn(message) {
-  if (['EMPTY_BUNDLE', 'CIRCULAR_DEPENDENCY'].includes(message.code))
+  if (['EMPTY_BUNDLE', 'CIRCULAR_DEPENDENCY'].includes(message.code)) {
     return
+  }
   console.error(message)
+}
+
+function sortLicenses(licenses) {
+  let withParenthesis = []
+  let noParenthesis = []
+  licenses.forEach((license) => {
+    if (/^\(/.test(license)) {
+      withParenthesis.push(license)
+    }
+    else {
+      noParenthesis.push(license)
+    }
+  })
+  withParenthesis = withParenthesis.sort()
+  noParenthesis = noParenthesis.sort()
+  return [...noParenthesis, ...withParenthesis]
 }

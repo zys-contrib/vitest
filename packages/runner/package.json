@@ -1,7 +1,7 @@
 {
   "name": "@vitest/runner",
   "type": "module",
-  "version": "0.30.1",
+  "version": "3.0.0-beta.4",
   "description": "Vitest test runner",
   "license": "MIT",
   "funding": "https://opencollective.com/vitest",
@@ -18,15 +18,15 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "default": "./dist/index.js"
     },
     "./utils": {
       "types": "./dist/utils.d.ts",
-      "import": "./dist/utils.js"
+      "default": "./dist/utils.js"
     },
     "./types": {
       "types": "./dist/types.d.ts",
-      "import": "./dist/types.js"
+      "default": "./dist/types.js"
     },
     "./*": "./*"
   },
@@ -34,18 +34,15 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": [
-    "dist",
-    "*.d.ts"
+    "*.d.ts",
+    "dist"
   ],
   "scripts": {
     "build": "rimraf dist && rollup -c",
-    "dev": "rollup -c --watch",
-    "prepublishOnly": "pnpm build"
+    "dev": "rollup -c --watch"
   },
   "dependencies": {
     "@vitest/utils": "workspace:*",
-    "concordance": "^5.0.4",
-    "p-limit": "^4.0.0",
-    "pathe": "^1.1.0"
+    "pathe": "^2.0.0"
   }
 }

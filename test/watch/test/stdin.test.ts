@@ -1,37 +1,115 @@
-import { test } from 'vitest'
+import { rmSync, writeFileSync } from 'node:fs'
+import { describe, expect, onTestFinished, test } from 'vitest'
 
-import { startWatchMode } from './utils'
+import { runVitest } from '../../test-utils'
 
-test('quit watch mode', async () => {
-  const vitest = await startWatchMode()
+const _options = { root: 'fixtures', watch: true }
 
-  vitest.write('q')
+describe.each([true, false])('standalone mode is %s', (standalone) => {
+  const options = { ..._options, standalone }
 
-  await vitest.isDone
+  test('quit watch mode', async () => {
+    const { vitest, waitForClose } = await runVitest(options)
+
+    vitest.write('q')
+
+    await waitForClose()
+  })
+
+  test('filter by filename', async () => {
+    const { vitest } = await runVitest(options)
+
+    vitest.write('p')
+
+    await vitest.waitForStdout('Input filename pattern')
+
+    vitest.write('math')
+
+    await vitest.waitForStdout('Pattern matches 1 result')
+    await vitest.waitForStdout('› math.test.ts')
+
+    vitest.write('\n')
+
+    await vitest.waitForStdout('Filename pattern: math')
+    await vitest.waitForStdout('1 passed')
+  })
+
+  test('filter by test name', async () => {
+    const { vitest } = await runVitest(options)
+
+    vitest.write('t')
+
+    await vitest.waitForStdout('Input test name pattern')
+
+    vitest.write('sum')
+    if (standalone) {
+      await vitest.waitForStdout('Pattern matches no results')
+    }
+    else {
+      await vitest.waitForStdout('Pattern matches 1 result')
+    }
+    await vitest.waitForStdout('› sum')
+
+    vitest.write('\n')
+
+    await vitest.waitForStdout('Test name pattern: /sum/')
+    await vitest.waitForStdout('1 passed')
+  })
+
+  test.skipIf(process.env.GITHUB_ACTIONS)('cancel test run', async () => {
+    const { vitest } = await runVitest(options)
+
+    const testPath = 'fixtures/cancel.test.ts'
+    const testCase = `// Dynamic test case
+import { afterAll, afterEach, test } from 'vitest'
+
+// These should be called even when test is cancelled
+afterAll(() => console.log('[cancel-test]: afterAll'))
+afterEach(() => console.log('[cancel-test]: afterEach'))
+
+test('1 - test that finishes', async () => {
+  console.log('[cancel-test]: test')
+
+  await new Promise(resolve => setTimeout(resolve, 1000))
 })
 
-test('filter by filename', async () => {
-  const vitest = await startWatchMode()
+test('2 - test that is cancelled', async () => {
+  console.log('[cancel-test]: should not run')
+})
+`
 
-  vitest.write('p')
+    onTestFinished(() => rmSync(testPath))
+    writeFileSync(testPath, testCase, 'utf8')
 
-  await vitest.waitForOutput('Input filename pattern')
+    // Test case is running, cancel it
+    await vitest.waitForStdout('[cancel-test]: test')
+    vitest.write('c')
 
-  vitest.write('math\n')
+    // Test hooks should still be called
+    await vitest.waitForStdout('CANCELLED')
+    await vitest.waitForStdout('[cancel-test]: afterAll')
+    await vitest.waitForStdout('[cancel-test]: afterEach')
 
-  await vitest.waitForOutput('Filename pattern: math')
-  await vitest.waitForOutput('1 passed')
+    expect(vitest.stdout).not.include('[cancel-test]: should not run')
+  })
 })
 
-test('filter by test name', async () => {
-  const vitest = await startWatchMode()
+test('rerun current pattern tests', async () => {
+  const { vitest } = await runVitest({ ..._options, testNamePattern: 'sum' })
 
-  vitest.write('t')
+  vitest.write('r')
 
-  await vitest.waitForOutput('Input test name pattern')
+  await vitest.waitForStdout('RERUN')
+  await vitest.waitForStdout('Test name pattern: /sum/')
+  await vitest.waitForStdout('1 passed')
+})
 
-  vitest.write('sum\n')
+test('cli filter as watch filename pattern', async () => {
+  const { vitest } = await runVitest(_options, ['math'])
 
-  await vitest.waitForOutput('Test name pattern: /sum/')
-  await vitest.waitForOutput('1 passed')
+  vitest.write('r')
+
+  await vitest.waitForStdout('RERUN')
+  await vitest.waitForStdout('Filename pattern: math')
+  await vitest.waitForStdout('1 passed')
 })

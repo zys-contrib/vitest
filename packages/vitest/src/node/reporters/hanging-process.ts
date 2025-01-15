@@ -1,5 +1,5 @@
+import type { Reporter } from '../types/reporter'
 import { createRequire } from 'node:module'
-import type { Reporter } from '../../types'
 
 export class HangingProcessReporter implements Reporter {
   whyRunning: (() => void) | undefined

@@ -1,7 +1,7 @@
 {
   "name": "@vitest/expect",
   "type": "module",
-  "version": "0.30.1",
+  "version": "3.0.0-beta.4",
   "description": "Jest's expect matchers as a Chai plugin",
   "license": "MIT",
   "funding": "https://opencollective.com/vitest",
@@ -17,28 +17,31 @@
   "sideEffects": false,
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./index.d.ts",
+      "default": "./dist/index.js"
     },
     "./*": "./*"
   },
   "main": "./dist/index.js",
   "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "types": "./index.d.ts",
   "files": [
+    "*.d.ts",
     "dist"
   ],
   "scripts": {
     "build": "rimraf dist && rollup -c",
-    "dev": "rollup -c --watch",
-    "prepublishOnly": "pnpm build"
+    "dev": "rollup -c --watch"
   },
   "dependencies": {
     "@vitest/spy": "workspace:*",
     "@vitest/utils": "workspace:*",
-    "chai": "^4.3.7"
+    "chai": "^5.1.2",
+    "tinyrainbow": "^2.0.0"
   },
   "devDependencies": {
-    "picocolors": "^1.0.0"
+    "@types/chai": "4.3.6",
+    "@vitest/runner": "workspace:*",
+    "rollup-plugin-copy": "^3.5.0"
   }
 }

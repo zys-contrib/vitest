@@ -1,15 +1,13 @@
 {
   "name": "@vitest/test-watch",
+  "type": "module",
   "private": true,
   "scripts": {
     "test": "vitest"
   },
   "devDependencies": {
     "@vitest/browser": "workspace:*",
-    "execa": "^7.0.0",
-    "strip-ansi": "^7.0.1",
     "vite": "latest",
-    "vitest": "workspace:*",
-    "webdriverio": "latest"
+    "vitest": "workspace:*"
   }
 }

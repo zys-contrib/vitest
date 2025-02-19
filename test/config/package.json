@@ -1,12 +1,13 @@
 {
   "name": "@vitest/test-config",
+  "type": "module",
   "private": true,
   "scripts": {
-    "test": "vitest run test/**"
+    "test": "vitest --typecheck.enabled"
   },
   "devDependencies": {
-    "execa": "^7.0.0",
-    "strip-ansi": "^7.0.1",
+    "@vitest/test-dep-conditions": "file:./deps/test-dep-conditions",
+    "tinyexec": "^0.3.2",
     "vite": "latest",
     "vitest": "workspace:*"
   }

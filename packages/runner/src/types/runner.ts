@@ -1,14 +1,29 @@
-import type { File, SequenceHooks, SequenceSetupFiles, Suite, TaskResult, Test, TestContext } from './tasks'
+import type { DiffOptions } from '@vitest/utils/diff'
+import type {
+  File,
+  SequenceHooks,
+  SequenceSetupFiles,
+  Suite,
+  Task,
+  TaskEventPack,
+  TaskResultPack,
+  Test,
+  TestContext,
+} from './tasks'
 
+/**
+ * This is a subset of Vitest config that's required for the runner to work.
+ */
 export interface VitestRunnerConfig {
   root: string
-  setupFiles: string[] | string
-  name: string
+  setupFiles: string[]
+  name?: string
   passWithNoTests: boolean
   testNamePattern?: RegExp
   allowOnly?: boolean
   sequence: {
     shuffle?: boolean
+    concurrent?: boolean
     seed: number
     hooks: SequenceHooks
     setupFiles: SequenceSetupFiles
@@ -19,85 +34,132 @@ export interface VitestRunnerConfig {
   maxConcurrency: number
   testTimeout: number
   hookTimeout: number
+  retry: number
+  includeTaskLocation?: boolean
+  diffOptions?: DiffOptions
+}
+
+/**
+ * Possible options to run a single file in a test.
+ */
+export interface FileSpecification {
+  filepath: string
+  testLocations: number[] | undefined
 }
 
 export type VitestRunnerImportSource = 'collect' | 'setup'
 
 export interface VitestRunnerConstructor {
-  new(config: VitestRunnerConfig): VitestRunner
+  new (config: VitestRunnerConfig): VitestRunner
 }
+
+export type CancelReason =
+  | 'keyboard-input'
+  | 'test-failure'
+  | (string & Record<string, never>)
 
 export interface VitestRunner {
   /**
    * First thing that's getting called before actually collecting and running tests.
    */
-  onBeforeCollect?(paths: string[]): unknown
+  onBeforeCollect?: (paths: string[]) => unknown
+  /**
+   * Called after the file task was created but not collected yet.
+   */
+  onCollectStart?: (file: File) => unknown
   /**
    * Called after collecting tests and before "onBeforeRun".
    */
-  onCollected?(files: File[]): unknown
+  onCollected?: (files: File[]) => unknown
+
+  /**
+   * Called when test runner should cancel next test runs.
+   * Runner should listen for this method and mark tests and suites as skipped in
+   * "onBeforeRunSuite" and "onBeforeRunTask" when called.
+   */
+  onCancel?: (reason: CancelReason) => unknown
 
   /**
    * Called before running a single test. Doesn't have "result" yet.
    */
-  onBeforeRunTest?(test: Test): unknown
+  onBeforeRunTask?: (test: Task) => unknown
   /**
    * Called before actually running the test function. Already has "result" with "state" and "startTime".
    */
-  onBeforeTryTest?(test: Test, options: { retry: number; repeats: number }): unknown
+  onBeforeTryTask?: (
+    test: Task,
+    options: { retry: number; repeats: number }
+  ) => unknown
+  /**
+   * When the task has finished running, but before cleanup hooks are called
+   */
+  onTaskFinished?: (test: Test) => unknown
   /**
    * Called after result and state are set.
    */
-  onAfterRunTest?(test: Test): unknown
+  onAfterRunTask?: (test: Task) => unknown
   /**
    * Called right after running the test function. Doesn't have new state yet. Will not be called, if the test function throws.
    */
-  onAfterTryTest?(test: Test, options: { retry: number; repeats: number }): unknown
+  onAfterTryTask?: (
+    test: Task,
+    options: { retry: number; repeats: number }
+  ) => unknown
 
   /**
    * Called before running a single suite. Doesn't have "result" yet.
    */
-  onBeforeRunSuite?(suite: Suite): unknown
+  onBeforeRunSuite?: (suite: Suite) => unknown
   /**
    * Called after running a single suite. Has state and result.
    */
-  onAfterRunSuite?(suite: Suite): unknown
+  onAfterRunSuite?: (suite: Suite) => unknown
 
   /**
    * If defined, will be called instead of usual Vitest suite partition and handling.
    * "before" and "after" hooks will not be ignored.
    */
-  runSuite?(suite: Suite): Promise<void>
+  runSuite?: (suite: Suite) => Promise<void>
   /**
    * If defined, will be called instead of usual Vitest handling. Useful, if you have your custom test function.
    * "before" and "after" hooks will not be ignored.
    */
-  runTest?(test: Test): Promise<void>
+  runTask?: (test: Task) => Promise<void>
 
   /**
    * Called, when a task is updated. The same as "onTaskUpdate" in a reporter, but this is running in the same thread as tests.
    */
-  onTaskUpdate?(task: [string, TaskResult | undefined][]): Promise<void>
+  onTaskUpdate?: (task: TaskResultPack[], events: TaskEventPack[]) => Promise<void>
 
   /**
    * Called before running all tests in collected paths.
    */
-  onBeforeRun?(files: File[]): unknown
+  onBeforeRunFiles?: (files: File[]) => unknown
   /**
    * Called right after running all tests in collected paths.
    */
-  onAfterRun?(files: File[]): unknown
+  onAfterRunFiles?: (files: File[]) => unknown
   /**
-   * Called when new context for a test is defined. Useful, if you want to add custom properties to the context.
+   * Called when new context for a test is defined. Useful if you want to add custom properties to the context.
    * If you only want to define custom context, consider using "beforeAll" in "setupFiles" instead.
+   *
+   * @see https://vitest.dev/advanced/runner#your-task-function
    */
-  extendTestContext?(context: TestContext): TestContext
+  extendTaskContext?: (context: TestContext) => TestContext
   /**
-   * Called, when files are imported. Can be called in two situations: when collecting tests and when importing setup files.
+   * Called when test and setup files are imported. Can be called in two situations: when collecting tests and when importing setup files.
    */
-  importFile(filepath: string, source: VitestRunnerImportSource): unknown
+  importFile: (filepath: string, source: VitestRunnerImportSource) => unknown
+  /**
+   * Function that is called when the runner attempts to get the value when `test.extend` is used with `{ injected: true }`
+   */
+  injectValue?: (key: string) => unknown
   /**
    * Publicly available configuration.
    */
   config: VitestRunnerConfig
+  /**
+   * The name of the current pool. Can affect how stack trace is inferred on the server side.
+   */
+  pool?: string
 }

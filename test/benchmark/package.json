@@ -1,13 +1,11 @@
 {
-  "name": "@vitest/benchmark",
+  "name": "@vitest/test-benchmark",
+  "type": "module",
   "private": true,
   "scripts": {
-    "test": "node test.mjs",
-    "bench:json": "vitest bench --reporter=json",
-    "bench": "vitest bench",
-    "coverage": "vitest run --coverage"
+    "test": "vitest"
   },
   "devDependencies": {
-    "execa": "^6.1.0"
+    "vitest": "workspace:*"
   }
 }

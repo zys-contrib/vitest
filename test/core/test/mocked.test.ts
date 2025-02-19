@@ -1,13 +1,13 @@
-import { afterEach, assert, beforeEach, describe, expect, test, vi, vitest } from 'vitest'
+import { stripVTControlCharacters } from 'node:util'
 // @ts-expect-error not typed module
 import { value as virtualValue } from 'virtual-module'
-import { createColors, getDefaultColors, setupColors } from '@vitest/utils'
-import { two } from '../src/submodule'
+import { assert, describe, expect, test, vi, vitest } from 'vitest'
+import * as globalMock from '../src/global-mock'
 import * as mocked from '../src/mockedA'
 import { mockedB } from '../src/mockedB'
-import { MockedC, asyncFunc, exportedStream } from '../src/mockedC'
+import { asyncFunc, exportedStream, MockedC } from '../src/mockedC'
 import MockedDefault, { MockedC as MockedD } from '../src/mockedD'
-import * as globalMock from '../src/global-mock'
+import { two } from '../src/submodule'
 
 vitest.mock('../src/submodule')
 vitest.mock('virtual-module', () => ({ value: 'mock' }))
@@ -27,8 +27,9 @@ vitest.mock('../src/mockedD')
 function getPropertyDescriptor(object: any, property: PropertyKey) {
   for (let o = object; o; o = Object.getPrototypeOf(o)) {
     const descriptor = Object.getOwnPropertyDescriptor(o, property)
-    if (descriptor)
+    if (descriptor) {
       return descriptor
+    }
   }
   return undefined
 }
@@ -77,6 +78,9 @@ describe('mocked classes', () => {
 
     expect(MockedC.prototype.doSomething).toHaveBeenCalledOnce()
     expect(MockedC.prototype.doSomething).not.toHaveReturnedWith('A')
+
+    vi.mocked(instance.doSomething).mockRestore()
+    expect(instance.doSomething()).not.toBe('A')
   })
 
   test('should mock getters', () => {
@@ -128,30 +132,34 @@ describe('default exported classes', () => {
   })
 })
 
-test('async functions should be mocked', () => {
+test('async functions should be mocked', async () => {
   expect(asyncFunc()).toBeUndefined()
   expect(vi.mocked(asyncFunc).mockResolvedValue).toBeDefined()
   vi.mocked(asyncFunc).mockResolvedValue('foo')
-  expect(asyncFunc()).resolves.toBe('foo')
+  await expect(asyncFunc()).resolves.toBe('foo')
 })
 
-describe('mocked function which fails on toReturnWith', () => {
-  beforeEach(() => {
-    setupColors(getDefaultColors())
-  })
-  afterEach(() => {
-    setupColors(createColors(true))
-  })
+function getError(cb: () => void): string {
+  try {
+    cb()
+  }
+  catch (e: any) {
+    return stripVTControlCharacters(e.message)
+  }
+  expect.unreachable()
+  return 'unreachable'
+}
 
+describe('mocked function which fails on toReturnWith', () => {
   test('zero call', () => {
     const mock = vi.fn(() => 1)
-    expect(() => expect(mock).toReturnWith(2)).toThrowErrorMatchingSnapshot()
+    expect(getError(() => expect(mock).toReturnWith(2))).toMatchSnapshot()
   })
 
   test('just one call', () => {
     const mock = vi.fn(() => 1)
     mock()
-    expect(() => expect(mock).toReturnWith(2)).toThrowErrorMatchingSnapshot()
+    expect(getError(() => expect(mock).toReturnWith(2))).toMatchSnapshot()
   })
 
   test('multi calls', () => {
@@ -159,7 +167,7 @@ describe('mocked function which fails on toReturnWith', () => {
     mock()
     mock()
     mock()
-    expect(() => expect(mock).toReturnWith(2)).toThrowErrorMatchingSnapshot()
+    expect(getError(() => expect(mock).toReturnWith(2))).toMatchSnapshot()
   })
 
   test('oject type', () => {
@@ -169,7 +177,7 @@ describe('mocked function which fails on toReturnWith', () => {
     mock()
     mock()
     mock()
-    expect(() => expect(mock).toReturnWith({ a: '4' })).toThrowErrorMatchingSnapshot()
+    expect(getError(() => expect(mock).toReturnWith({ a: '4' }))).toMatchSnapshot()
   })
 })
 
@@ -220,7 +228,7 @@ describe('temporary mock implementation', () => {
     expect(mock()).toBe(1)
   })
 
-  test('temporary mock implementation with async callback works as expecetd', async () => {
+  test('temporary mock implementation with async callback works as expected', async () => {
     const mock = vi.fn(() => 1)
 
     expect.assertions(3)

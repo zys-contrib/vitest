@@ -1,68 +1,79 @@
-import { fileURLToPath } from 'node:url'
+import type { Plugin } from 'vitest/config'
+import type { TestProject } from 'vitest/node'
+import c from 'tinyrainbow'
+import { createViteLogger, createViteServer } from 'vitest/node'
+import { version } from '../../package.json'
+import BrowserPlugin from './plugin'
+import { ParentBrowserProject } from './projectParent'
+import { setupBrowserRpc } from './rpc'
 
-import { resolve } from 'node:path'
-import { builtinModules } from 'node:module'
-import { polyfillPath } from 'modern-node-polyfills'
-import sirv from 'sirv'
-import type { Plugin } from 'vite'
+export { distRoot } from './constants'
+export { createBrowserPool } from './pool'
 
-const polyfills = [
-  'util',
-]
+export type { ProjectBrowser } from './project'
 
-export default (base = '/'): Plugin[] => {
-  const pkgRoot = resolve(fileURLToPath(import.meta.url), '../..')
-  const distRoot = resolve(pkgRoot, 'dist')
+export async function createBrowserServer(
+  project: TestProject,
+  configFile: string | undefined,
+  prePlugins: Plugin[] = [],
+  postPlugins: Plugin[] = [],
+): Promise<ParentBrowserProject> {
+  if (project.vitest.version !== version) {
+    project.vitest.logger.warn(
+      c.yellow(
+        `Loaded ${c.inverse(c.yellow(` vitest@${project.vitest.version} `))} and ${c.inverse(c.yellow(` @vitest/browser@${version} `))}.`
+        + '\nRunning mixed versions is not supported and may lead into bugs'
+        + '\nUpdate your dependencies and make sure the versions match.',
+      ),
+    )
+  }
 
-  return [
-    {
-      enforce: 'pre',
-      name: 'vitest:browser',
-      async config(viteConfig) {
-        // Enables using ignore hint for coverage providers with @preserve keyword
-        viteConfig.esbuild ||= {}
-        viteConfig.esbuild.legalComments = 'inline'
-      },
-      async configureServer(server) {
-        server.middlewares.use(
-          base,
-          sirv(resolve(distRoot, 'client'), {
-            single: false,
-            dev: true,
-          }),
-        )
-      },
-    },
-    {
-      name: 'modern-node-polyfills',
-      enforce: 'pre',
-      config() {
-        return {
-          optimizeDeps: {
-            exclude: [...polyfills, ...builtinModules],
-          },
+  const server = new ParentBrowserProject(project, '/')
+
+  const configPath = typeof configFile === 'string' ? configFile : false
+
+  const logLevel = (process.env.VITEST_BROWSER_DEBUG as 'info') ?? 'info'
+
+  const logger = createViteLogger(project.vitest.logger, logLevel, {
+    allowClearScreen: false,
+  })
+
+  const vite = await createViteServer({
+    ...project.options, // spread project config inlined in root workspace config
+    base: '/',
+    logLevel,
+    customLogger: {
+      ...logger,
+      info(msg, options) {
+        logger.info(msg, options)
+        if (msg.includes('optimized dependencies changed. reloading')) {
+          logger.warn(
+            [
+              c.yellow(`\n${c.bold('[vitest]')} Vite unexpectedly reloaded a test. This may cause tests to fail, lead to flaky behaviour or duplicated test runs.\n`),
+              c.yellow(`For a stable experience, please add mentioned dependencies to your config\'s ${c.bold('\`optimizeDeps.include\`')} field manually.\n\n`),
+            ].join(''),
+          )
         }
       },
-      async resolveId(id) {
-        if (!builtinModules.includes(id) && !polyfills.includes(id) && !id.startsWith('node:'))
-          return
-
-        id = normalizeId(id)
-        return { id: await polyfillPath(id), moduleSideEffects: false }
-      },
     },
-  ]
-}
+    mode: project.config.mode,
+    configFile: configPath,
+    // watch is handled by Vitest
+    server: {
+      hmr: false,
+      watch: null,
+    },
+    plugins: [
+      ...prePlugins,
+      ...(project.options?.plugins || []),
+      BrowserPlugin(server),
+      ...postPlugins,
+    ],
+  })
 
-function normalizeId(id: string, base?: string): string {
-  if (base && id.startsWith(base))
-    id = `/${id.slice(base.length)}`
+  await vite.listen()
 
-  return id
-    .replace(/^\/@id\/__x00__/, '\0') // virtual modules start with `\0`
-    .replace(/^\/@id\//, '')
-    .replace(/^__vite-browser-external:/, '')
-    .replace(/^node:/, '')
-    .replace(/[?&]v=\w+/, '?') // remove ?v= query
-    .replace(/\?$/, '') // remove end query mark
+  setupBrowserRpc(server)
+
+  return server
 }

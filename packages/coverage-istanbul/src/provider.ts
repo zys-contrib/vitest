@@ -1,68 +1,42 @@
-/* eslint-disable no-restricted-imports */
-import { existsSync, promises as fs } from 'node:fs'
-import { relative, resolve } from 'pathe'
-import type { TransformPluginContext } from 'rollup'
-import type { AfterSuiteRunMeta, CoverageIstanbulOptions, CoverageProvider, ReportContext, ResolvedCoverageOptions, Vitest } from 'vitest'
-import { coverageConfigDefaults, defaultExclude, defaultInclude } from 'vitest/config'
-import { BaseCoverageProvider } from 'vitest/coverage'
-import libReport from 'istanbul-lib-report'
-import reports from 'istanbul-reports'
-import type { CoverageMap } from 'istanbul-lib-coverage'
-import libCoverage from 'istanbul-lib-coverage'
-import libSourceMaps from 'istanbul-lib-source-maps'
-import { type Instrumenter, createInstrumenter } from 'istanbul-lib-instrument'
+import type { ProxifiedModule } from 'magicast'
+import type { CoverageProvider, ReportContext, ResolvedCoverageOptions, Vitest } from 'vitest/node'
+import { promises as fs } from 'node:fs'
 // @ts-expect-error missing types
-import _TestExclude from 'test-exclude'
+import { defaults as istanbulDefaults } from '@istanbuljs/schema'
+import createDebug from 'debug'
+import libCoverage, { type CoverageMap } from 'istanbul-lib-coverage'
+import { createInstrumenter, type Instrumenter } from 'istanbul-lib-instrument'
+import libReport from 'istanbul-lib-report'
+import libSourceMaps from 'istanbul-lib-source-maps'
+import reports from 'istanbul-reports'
+import { parseModule } from 'magicast'
+import { resolve } from 'pathe'
+import TestExclude from 'test-exclude'
+import c from 'tinyrainbow'
+import { BaseCoverageProvider } from 'vitest/coverage'
+
+import { version } from '../package.json' with { type: 'json' }
 import { COVERAGE_STORE_KEY } from './constants'
 
-type Options = ResolvedCoverageOptions<'istanbul'>
+const debug = createDebug('vitest:coverage')
 
-type Threshold = 'lines' | 'functions' | 'statements' | 'branches'
-
-interface TestExclude {
-  new(opts: {
-    cwd?: string | string[]
-    include?: string | string[]
-    exclude?: string | string[]
-    extension?: string | string[]
-    excludeNodeModules?: boolean
-  }): {
-    shouldInstrument(filePath: string): boolean
-    glob(cwd: string): Promise<string[]>
-  }
-}
-
-export class IstanbulCoverageProvider extends BaseCoverageProvider implements CoverageProvider {
-  name = 'istanbul'
-
-  ctx!: Vitest
-  options!: Options
+export class IstanbulCoverageProvider extends BaseCoverageProvider<ResolvedCoverageOptions<'istanbul'>> implements CoverageProvider {
+  name = 'istanbul' as const
+  version: string = version
   instrumenter!: Instrumenter
-  testExclude!: InstanceType<TestExclude>
+  testExclude!: InstanceType<typeof TestExclude>
 
-  /**
-   * Coverage objects collected from workers.
-   * Some istanbul utilizers write these into file system instead of storing in memory.
-   * If storing in memory causes issues, we can simply write these into fs in `onAfterSuiteRun`
-   * and read them back when merging coverage objects in `onAfterAllFilesRun`.
-   */
-  coverages: any[] = []
+  initialize(ctx: Vitest): void {
+    this._initialize(ctx)
 
-  initialize(ctx: Vitest) {
-    const config: CoverageIstanbulOptions = ctx.config.coverage
-
-    this.ctx = ctx
-    this.options = {
-      ...coverageConfigDefaults,
-
-      // User's options
-      ...config,
-
-      // Resolved fields
-      provider: 'istanbul',
-      reportsDirectory: resolve(ctx.config.root, config.reportsDirectory || coverageConfigDefaults.reportsDirectory),
-      reporter: this.resolveReporters(config.reporter || coverageConfigDefaults.reporter),
-    }
+    this.testExclude = new TestExclude({
+      cwd: ctx.config.root,
+      include: this.options.include,
+      exclude: this.options.exclude,
+      excludeNodeModules: true,
+      extension: this.options.extension,
+      relativePath: !this.options.allowExternal,
+    })
 
     this.instrumenter = createInstrumenter({
       produceSourceMap: true,
@@ -74,177 +48,153 @@ export class IstanbulCoverageProvider extends BaseCoverageProvider implements Co
       coverageGlobalScope: 'globalThis',
       coverageGlobalScopeFunc: false,
       ignoreClassMethods: this.options.ignoreClassMethods,
-    })
-
-    this.testExclude = new _TestExclude({
-      cwd: ctx.config.root,
-      include: typeof this.options.include === 'undefined' ? undefined : [...this.options.include],
-      exclude: [...defaultExclude, ...defaultInclude, ...this.options.exclude],
-      excludeNodeModules: true,
-      extension: this.options.extension,
+      parserPlugins: [
+        ...istanbulDefaults.instrumenter.parserPlugins,
+        ['importAttributes', { deprecatedAssertSyntax: true }],
+      ],
+      generatorOpts: {
+        importAttributesKeyword: 'with',
+      },
     })
   }
 
-  resolveOptions() {
-    return this.options
-  }
-
-  onFileTransform(sourceCode: string, id: string, pluginCtx: TransformPluginContext) {
-    if (!this.testExclude.shouldInstrument(id))
+  onFileTransform(sourceCode: string, id: string, pluginCtx: any): { code: string; map: any } | undefined {
+    if (!this.testExclude.shouldInstrument(id)) {
       return
+    }
 
     const sourceMap = pluginCtx.getCombinedSourcemap()
     sourceMap.sources = sourceMap.sources.map(removeQueryParameters)
 
-    const code = this.instrumenter.instrumentSync(sourceCode, id, sourceMap as any)
+    // Exclude SWC's decorators that are left in source maps
+    sourceCode = sourceCode.replaceAll(
+      '_ts_decorate',
+      '/* istanbul ignore next */_ts_decorate',
+    )
+
+    const code = this.instrumenter.instrumentSync(
+      sourceCode,
+      id,
+      sourceMap as any,
+    )
     const map = this.instrumenter.lastSourceMap() as any
 
     return { code, map }
   }
 
-  onAfterSuiteRun({ coverage }: AfterSuiteRunMeta) {
-    this.coverages.push(coverage)
+  createCoverageMap(): libCoverage.CoverageMap {
+    return libCoverage.createCoverageMap({})
   }
 
-  async clean(clean = true) {
-    if (clean && existsSync(this.options.reportsDirectory))
-      await fs.rm(this.options.reportsDirectory, { recursive: true, force: true, maxRetries: 10 })
+  async generateCoverage({ allTestsRun }: ReportContext): Promise<CoverageMap> {
+    const coverageMap = this.createCoverageMap()
+    let coverageMapByTransformMode = this.createCoverageMap()
 
-    this.coverages = []
+    await this.readCoverageFiles<CoverageMap>({
+      onFileRead(coverage) {
+        coverageMapByTransformMode.merge(coverage)
+      },
+      onFinished: async () => {
+        // Source maps can change based on projectName and transform mode.
+        // Coverage transform re-uses source maps so we need to separate transforms from each other.
+        const transformedCoverage = await transformCoverage(coverageMapByTransformMode)
+        coverageMap.merge(transformedCoverage)
+
+        coverageMapByTransformMode = this.createCoverageMap()
+      },
+      onDebug: debug,
+    })
+
+    // Include untested files when all tests were run (not a single file re-run)
+    // or if previous results are preserved by "cleanOnRerun: false"
+    if (this.options.all && (allTestsRun || !this.options.cleanOnRerun)) {
+      const coveredFiles = coverageMap.files()
+      const uncoveredCoverage = await this.getCoverageMapForUncoveredFiles(coveredFiles)
+
+      coverageMap.merge(await transformCoverage(uncoveredCoverage))
+    }
+
+    if (this.options.excludeAfterRemap) {
+      coverageMap.filter(filename => this.testExclude.shouldInstrument(filename))
+    }
+
+    return coverageMap
   }
 
-  async reportCoverage({ allTestsRun }: ReportContext = {}) {
-    const mergedCoverage: CoverageMap = this.coverages.reduce((coverage, previousCoverageMap) => {
-      const map = libCoverage.createCoverageMap(coverage)
-      map.merge(previousCoverageMap)
-      return map
-    }, libCoverage.createCoverageMap({}))
-
-    if (this.options.all && allTestsRun)
-      await this.includeUntestedFiles(mergedCoverage)
-
-    includeImplicitElseBranches(mergedCoverage)
-
-    const sourceMapStore = libSourceMaps.createSourceMapStore()
-    const coverageMap: CoverageMap = await sourceMapStore.transformCoverage(mergedCoverage)
-
+  async generateReports(coverageMap: CoverageMap, allTestsRun: boolean | undefined): Promise<void> {
     const context = libReport.createContext({
       dir: this.options.reportsDirectory,
       coverageMap,
-      sourceFinder: sourceMapStore.sourceFinder,
       watermarks: this.options.watermarks,
     })
 
+    if (this.hasTerminalReporter(this.options.reporter)) {
+      this.ctx.logger.log(
+        c.blue(' % ') + c.dim('Coverage report from ') + c.yellow(this.name),
+      )
+    }
+
     for (const reporter of this.options.reporter) {
-      reports.create(reporter[0], {
-        skipFull: this.options.skipFull,
-        projectRoot: this.ctx.config.root,
-        ...reporter[1],
-      }).execute(context)
+      // Type assertion required for custom reporters
+      reports
+        .create(reporter[0] as Parameters<typeof reports.create>[0], {
+          skipFull: this.options.skipFull,
+          projectRoot: this.ctx.config.root,
+          ...reporter[1],
+        })
+        .execute(context)
     }
 
-    if (this.options.branches
-      || this.options.functions
-      || this.options.lines
-      || this.options.statements) {
-      this.checkThresholds(coverageMap, {
-        branches: this.options.branches,
-        functions: this.options.functions,
-        lines: this.options.lines,
-        statements: this.options.statements,
-      })
-    }
-
-    if (this.options.thresholdAutoUpdate && allTestsRun) {
-      this.updateThresholds({
-        coverageMap,
-        thresholds: {
-          branches: this.options.branches,
-          functions: this.options.functions,
-          lines: this.options.lines,
-          statements: this.options.statements,
-        },
-        perFile: this.options.perFile,
-        configurationFile: this.ctx.server.config.configFile,
-      })
+    if (this.options.thresholds) {
+      await this.reportThresholds(coverageMap, allTestsRun)
     }
   }
 
-  checkThresholds(coverageMap: CoverageMap, thresholds: Record<Threshold, number | undefined>) {
-    // Construct list of coverage summaries where thresholds are compared against
-    const summaries = this.options.perFile
-      ? coverageMap.files()
-        .map((file: string) => ({
-          file,
-          summary: coverageMap.fileCoverageFor(file).toSummary(),
-        }))
-      : [{
-          file: null,
-          summary: coverageMap.getCoverageSummary(),
-        }]
-
-    // Check thresholds of each summary
-    for (const { summary, file } of summaries) {
-      for (const thresholdKey of ['lines', 'functions', 'statements', 'branches'] as const) {
-        const threshold = thresholds[thresholdKey]
-
-        if (threshold !== undefined) {
-          const coverage = summary.data[thresholdKey].pct
-
-          if (coverage < threshold) {
-            process.exitCode = 1
-
-            /*
-             * Generate error message based on perFile flag:
-             * - ERROR: Coverage for statements (33.33%) does not meet threshold (85%) for src/math.ts
-             * - ERROR: Coverage for statements (50%) does not meet global threshold (85%)
-             */
-            let errorMessage = `ERROR: Coverage for ${thresholdKey} (${coverage}%) does not meet`
-
-            if (!this.options.perFile)
-              errorMessage += ' global'
-
-            errorMessage += ` threshold (${threshold}%)`
-
-            if (this.options.perFile && file)
-              errorMessage += ` for ${relative('./', file).replace(/\\/g, '/')}`
-
-            console.error(errorMessage)
-          }
-        }
-      }
-    }
+  async parseConfigModule(configFilePath: string): Promise<ProxifiedModule<any>> {
+    return parseModule(
+      await fs.readFile(configFilePath, 'utf8'),
+    )
   }
 
-  async includeUntestedFiles(coverageMap: CoverageMap) {
-    // Load, instrument and collect empty coverages from all files which
-    // are not already in the coverage map
-    const includedFiles = await this.testExclude.glob(this.ctx.config.root)
+  private async getCoverageMapForUncoveredFiles(coveredFiles: string[]) {
+    const allFiles = await this.testExclude.glob(this.ctx.config.root)
+    let includedFiles = allFiles.map(file =>
+      resolve(this.ctx.config.root, file),
+    )
+
+    if (this.ctx.config.changed) {
+      includedFiles = (this.ctx.config.related || []).filter(file =>
+        includedFiles.includes(file),
+      )
+    }
+
     const uncoveredFiles = includedFiles
-      .map(file => resolve(this.ctx.config.root, file))
-      .filter(file => !coverageMap.data[file])
+      .filter(file => !coveredFiles.includes(file))
+      .sort()
 
-    const transformResults = await Promise.all(uncoveredFiles.map(async (filename) => {
-      const transformResult = await this.ctx.vitenode.transformRequest(filename)
-      return { transformResult, filename }
-    }))
+    const cacheKey = new Date().getTime()
+    const coverageMap = this.createCoverageMap()
 
-    for (const { transformResult, filename } of transformResults) {
-      const sourceMap = transformResult?.map
+    const transform = this.createUncoveredFileTransformer(this.ctx)
 
-      if (sourceMap) {
-        this.instrumenter.instrumentSync(
-          transformResult.code,
-          filename,
-          sourceMap as any,
-        )
+    // Note that these cannot be run parallel as synchronous instrumenter.lastFileCoverage
+    // returns the coverage of the last transformed file
+    for (const [index, filename] of uncoveredFiles.entries()) {
+      debug('Uncovered file %s %d/%d', filename, index, uncoveredFiles.length)
 
-        const lastCoverage = this.instrumenter.lastFileCoverage()
-        if (lastCoverage)
-          coverageMap.addFileCoverage(lastCoverage)
-      }
+      // Make sure file is not served from cache so that instrumenter loads up requested file coverage
+      await transform(`${filename}?v=${cacheKey}`)
+      const lastCoverage = this.instrumenter.lastFileCoverage()
+      coverageMap.addFileCoverage(lastCoverage)
     }
+
+    return coverageMap
   }
+}
+
+async function transformCoverage(coverageMap: CoverageMap) {
+  const sourceMapStore = libSourceMaps.createSourceMapStore()
+  return await sourceMapStore.transformCoverage(coverageMap)
 }
 
 /**
@@ -254,45 +204,4 @@ export class IstanbulCoverageProvider extends BaseCoverageProvider implements Co
  */
 function removeQueryParameters(filename: string) {
   return filename.split('?')[0]
-}
-
-/**
- * Work-around for #1887 and #2239 while waiting for https://github.com/istanbuljs/istanbuljs/pull/706
- *
- * Goes through all files in the coverage map and checks if branchMap's have
- * if-statements with implicit else. When finds one, copies source location of
- * the if-statement into the else statement.
- */
-function includeImplicitElseBranches(coverageMap: CoverageMap) {
-  for (const file of coverageMap.files()) {
-    const fileCoverage = coverageMap.fileCoverageFor(file)
-
-    for (const branchMap of Object.values(fileCoverage.branchMap)) {
-      if (branchMap.type === 'if') {
-        const lastIndex = branchMap.locations.length - 1
-
-        if (lastIndex > 0) {
-          const elseLocation = branchMap.locations[lastIndex]
-
-          if (elseLocation && isEmptyCoverageRange(elseLocation)) {
-            const ifLocation = branchMap.locations[0]
-
-            elseLocation.start = { ...ifLocation.start }
-            elseLocation.end = { ...ifLocation.end }
-          }
-        }
-      }
-    }
-  }
-}
-
-function isEmptyCoverageRange(range: libCoverage.Range) {
-  return (
-    range.start === undefined
-    || range.start.line === undefined
-    || range.start.column === undefined
-    || range.end === undefined
-    || range.end.line === undefined
-    || range.end.column === undefined
-  )
 }

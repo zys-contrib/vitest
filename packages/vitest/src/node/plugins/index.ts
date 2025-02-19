@@ -1,25 +1,40 @@
 import type { UserConfig as ViteConfig, Plugin as VitePlugin } from 'vite'
+import type { ResolvedConfig, UserConfig } from '../types/config'
+import {
+  deepMerge,
+  notNullish,
+  toArray,
+} from '@vitest/utils'
 import { relative } from 'pathe'
+import { defaultPort } from '../../constants'
 import { configDefaults } from '../../defaults'
-import type { ResolvedConfig, UserConfig } from '../../types'
-import { deepMerge, notNullish, removeUndefinedValues } from '../../utils'
-import { ensurePackageInstalled } from '../pkg'
-import { resolveApiServerConfig } from '../config'
-import { Vitest } from '../core'
 import { generateScopedClassName } from '../../integrations/css/css-modules'
-import { EnvReplacerPlugin } from './envReplacer'
-import { GlobalSetupPlugin } from './globalSetup'
-import { CSSEnablerPlugin } from './cssEnabler'
+import { resolveApiServerConfig } from '../config/resolveConfig'
+import { Vitest } from '../core'
+import { createViteLogger, silenceImportViteIgnoreWarning } from '../viteLogger'
 import { CoverageTransform } from './coverageTransform'
+import { CSSEnablerPlugin } from './cssEnabler'
+import { MocksPlugins } from './mocks'
+import { NormalizeURLPlugin } from './normalizeURL'
+import { VitestOptimizer } from './optimizer'
+import { SsrReplacerPlugin } from './ssrReplacer'
+import {
+  deleteDefineConfig,
+  getDefaultResolveOptions,
+  hijackVitePluginInject,
+  resolveFsAllow,
+} from './utils'
+import { VitestCoreResolver } from './vitestResolver'
 
-export async function VitestPlugin(options: UserConfig = {}, ctx = new Vitest('test')): Promise<VitePlugin[]> {
+export async function VitestPlugin(
+  options: UserConfig = {},
+  ctx: Vitest = new Vitest('test'),
+): Promise<VitePlugin[]> {
   const userConfig = deepMerge({}, options) as UserConfig
 
-  const getRoot = () => ctx.config?.root || options.root || process.cwd()
-
   async function UIPlugin() {
-    await ensurePackageInstalled('@vitest/ui', getRoot())
-    return (await import('@vitest/ui')).default(options.uiBase)
+    await ctx.packageInstaller.ensureInstalled('@vitest/ui', options.root || process.cwd(), ctx.version)
+    return (await import('@vitest/ui')).default(ctx)
   }
 
   return [
@@ -39,163 +54,181 @@ export async function VitestPlugin(options: UserConfig = {}, ctx = new Vitest('t
         // preliminary merge of options to be able to create server options for vite
         // however to allow vitest plugins to modify vitest config values
         // this is repeated in configResolved where the config is final
-        const preOptions = deepMerge(
+        const testConfig = deepMerge(
           {} as UserConfig,
           configDefaults,
-          options,
           removeUndefinedValues(viteConfig.test ?? {}),
+          options,
         )
-        preOptions.api = resolveApiServerConfig(preOptions)
-
-        if (viteConfig.define) {
-          delete viteConfig.define['import.meta.vitest']
-          delete viteConfig.define['process.env']
-        }
+        testConfig.api = resolveApiServerConfig(testConfig, defaultPort)
 
         // store defines for globalThis to make them
         // reassignable when running in worker in src/runtime/setup.ts
-        const defines: Record<string, any> = {}
+        const defines: Record<string, any> = deleteDefineConfig(viteConfig)
 
-        for (const key in viteConfig.define) {
-          const val = viteConfig.define[key]
-          let replacement: any
-          try {
-            replacement = typeof val === 'string' ? JSON.parse(val) : val
-          }
-          catch {
-            // probably means it contains reference to some variable,
-            // like this: "__VAR__": "process.env.VAR"
-            continue
-          }
-          if (key.startsWith('import.meta.env.')) {
-            const envKey = key.slice('import.meta.env.'.length)
-            process.env[envKey] = replacement
-            delete viteConfig.define[key]
-          }
-          else if (key.startsWith('process.env.')) {
-            const envKey = key.slice('process.env.'.length)
-            process.env[envKey] = replacement
-            delete viteConfig.define[key]
-          }
-          else if (!key.includes('.')) {
-            defines[key] = replacement
-            delete viteConfig.define[key]
-          }
+        ;(options as unknown as ResolvedConfig).defines = defines
+
+        let open: string | boolean | undefined = false
+
+        if (testConfig.ui && testConfig.open) {
+          open = testConfig.uiBase ?? '/__vitest__/'
         }
 
-        (options as ResolvedConfig).defines = defines
-
-        let open: string | boolean | undefined
-
-        if (preOptions.ui && preOptions.open)
-          open = preOptions.uiBase ?? '/__vitest__/'
+        const resolveOptions = getDefaultResolveOptions()
 
         const config: ViteConfig = {
           root: viteConfig.test?.root || options.root,
-          esbuild: {
-            sourcemap: 'external',
-
-            // Enables using ignore hint for coverage providers with @preserve keyword
-            legalComments: 'inline',
-          },
+          esbuild:
+            viteConfig.esbuild === false
+              ? false
+              : {
+                  // Lowest target Vitest supports is Node18
+                  target: viteConfig.esbuild?.target || 'node18',
+                  sourcemap: 'external',
+                  // Enables using ignore hint for coverage providers with @preserve keyword
+                  legalComments: 'inline',
+                },
           resolve: {
-            // by default Vite resolves `module` field, which not always a native ESM module
-            // setting this option can bypass that and fallback to cjs version
-            mainFields: [],
-            alias: preOptions.alias,
-            conditions: ['node'],
-            // eslint-disable-next-line @typescript-eslint/prefer-ts-expect-error
-            // @ts-ignore we support Vite ^3.0, but browserField is available in Vite ^3.2
-            browserField: false,
+            ...resolveOptions,
+            alias: testConfig.alias,
           },
           server: {
-            ...preOptions.api,
-            watch: {
-              ignored: preOptions.watchExclude,
-            },
+            ...testConfig.api,
             open,
             hmr: false,
+            ws: testConfig.api?.middlewareMode ? false : undefined,
             preTransformRequests: false,
+            fs: {
+              allow: resolveFsAllow(options.root || process.cwd(), testConfig.config),
+            },
+          },
+          build: {
+            // Vitest doesn't use outputDir, but this value affects what folders are watched
+            // https://github.com/vitest-dev/vitest/issues/5429
+            // This works for Vite <5.2.10
+            outDir: 'dummy-non-existing-folder',
+            // This works for Vite >=5.2.10
+            // https://github.com/vitejs/vite/pull/16453
+            emptyOutDir: false,
+          },
+          // eslint-disable-next-line ts/ban-ts-comment
+          // @ts-ignore Vite 6 compat
+          environments: {
+            ssr: {
+              resolve: resolveOptions,
+            },
+          },
+          test: {
+            poolOptions: {
+              threads: {
+                isolate:
+                  options.poolOptions?.threads?.isolate
+                  ?? options.isolate
+                  ?? testConfig.poolOptions?.threads?.isolate
+                  ?? viteConfig.test?.isolate,
+              },
+              forks: {
+                isolate:
+                  options.poolOptions?.forks?.isolate
+                  ?? options.isolate
+                  ?? testConfig.poolOptions?.forks?.isolate
+                  ?? viteConfig.test?.isolate,
+              },
+            },
+            root: testConfig.root ?? viteConfig.test?.root,
+            deps: testConfig.deps ?? viteConfig.test?.deps,
           },
         }
 
-        const classNameStrategy = (typeof preOptions.css !== 'boolean' && preOptions.css?.modules?.classNameStrategy) || 'stable'
+        if (ctx.configOverride.project) {
+          // project filter was set by the user, so we need to filter the project
+          options.project = ctx.configOverride.project
+        }
+
+        config.customLogger = createViteLogger(
+          ctx.logger,
+          viteConfig.logLevel || 'warn',
+          {
+            allowClearScreen: false,
+          },
+        )
+        config.customLogger = silenceImportViteIgnoreWarning(config.customLogger)
+
+        // we want inline dependencies to be resolved by analyser plugin so module graph is populated correctly
+        if (viteConfig.ssr?.noExternal !== true) {
+          const inline = testConfig.server?.deps?.inline
+          if (inline === true) {
+            config.ssr = { noExternal: true }
+          }
+          else {
+            const noExternal = viteConfig.ssr?.noExternal
+            const noExternalArray
+              = typeof noExternal !== 'undefined'
+                ? toArray(noExternal)
+                : undefined
+            // filter the same packages
+            const uniqueInline
+              = inline && noExternalArray
+                ? inline.filter(dep => !noExternalArray.includes(dep))
+                : inline
+            config.ssr = {
+              noExternal: uniqueInline,
+            }
+          }
+        }
+
+        // chokidar fsevents is unstable on macos when emitting "ready" event
+        if (
+          process.platform === 'darwin'
+          && process.env.VITE_TEST_WATCHER_DEBUG
+        ) {
+          const watch = config.server!.watch
+          if (watch) {
+            // eslint-disable-next-line ts/ban-ts-comment
+            // @ts-ignore Vite 6 compat
+            watch.useFsEvents = false
+            watch.usePolling = false
+          }
+        }
+
+        const classNameStrategy
+          = (typeof testConfig.css !== 'boolean'
+            && testConfig.css?.modules?.classNameStrategy)
+          || 'stable'
 
         if (classNameStrategy !== 'scoped') {
           config.css ??= {}
           config.css.modules ??= {}
           if (config.css.modules) {
-            config.css.modules.generateScopedName = (name: string, filename: string) => {
-              const root = getRoot()
-              return generateScopedClassName(classNameStrategy, name, relative(root, filename))!
+            config.css.modules.generateScopedName = (
+              name: string,
+              filename: string,
+            ) => {
+              const root = ctx.config.root || options.root || process.cwd()
+              return generateScopedClassName(
+                classNameStrategy,
+                name,
+                relative(root, filename),
+              )!
             }
           }
         }
 
-        const optimizeConfig: Partial<ViteConfig> = {}
-        // TODO: optimizer is temporary disabled, until Vite provides "optimzier.byDefault" option
-        // const optimizer = preOptions.deps?.experimentalOptimizer
-        // if (!optimizer?.enabled) {
-        optimizeConfig.cacheDir = undefined
-        optimizeConfig.optimizeDeps = {
-          // experimental in Vite >2.9.2, entries remains to help with older versions
-          disabled: true,
-          entries: [],
-        }
-        // }
-        // else {
-        //   const root = config.root || process.cwd()
-        //   // TODO: add support for experimental optimizer
-        //   const entries = []
-        //   // const [...entries] = await ctx.globAllTestFiles(preOptions as ResolvedConfig, preOptions.dir || root)
-        //   if (preOptions?.setupFiles) {
-        //     const setupFiles = toArray(preOptions.setupFiles).map((file: string) =>
-        //       normalize(
-        //         resolveModule(file, { paths: [root] })
-        //             ?? resolve(root, file),
-        //       ),
-        //     )
-        //     entries.push(...setupFiles)
-        //   }
-        //   const cacheDir = preOptions.cache !== false ? preOptions.cache?.dir : null
-        //   optimizeConfig.cacheDir = cacheDir ?? 'node_modules/.vitest'
-        //   optimizeConfig.optimizeDeps = {
-        //     ...viteConfig.optimizeDeps,
-        //     ...optimizer,
-        //     disabled: false,
-        //     entries: [...(viteConfig.optimizeDeps?.entries || []), ...entries],
-        //     exclude: ['vitest', ...builtinModules, ...(optimizer.exclude || viteConfig.optimizeDeps?.exclude || [])],
-        //     include: (optimizer.include || viteConfig.optimizeDeps?.include || []).filter((n: string) => n !== 'vitest'),
-        //   }
-        //   // Vite throws an error that it cannot rename "deps_temp", but optimization still works
-        //   // let's not show this error to users
-        //   const { error: logError } = console
-        //   console.error = (...args) => {
-        //     if (typeof args[0] === 'string' && args[0].includes('/deps_temp'))
-        //       return
-        //     return logError(...args)
-        //   }
-        // }
-        Object.assign(config, optimizeConfig)
-
         return config
       },
       async configResolved(viteConfig) {
-        const viteConfigTest = (viteConfig.test as any) || {}
-        if (viteConfigTest.watch === false)
-          viteConfigTest.run = true
+        const viteConfigTest = (viteConfig.test as UserConfig) || {}
+        if (viteConfigTest.watch === false) {
+          ;(viteConfigTest as any).run = true
+        }
 
-        if ('alias' in viteConfigTest)
+        if ('alias' in viteConfigTest) {
           delete viteConfigTest.alias
+        }
 
         // viteConfig.test is final now, merge it for real
-        options = deepMerge(
-          {},
-          configDefaults,
-          viteConfigTest,
-          options,
-        )
-        options.api = resolveApiServerConfig(options)
+        options = deepMerge({}, configDefaults, viteConfigTest, options)
+        options.api = resolveApiServerConfig(options, defaultPort)
 
         // we replace every "import.meta.env" with "process.env"
         // to allow reassigning, so we need to put all envs on process.env
@@ -205,43 +238,70 @@ export async function VitestPlugin(options: UserConfig = {}, ctx = new Vitest('t
         // so we are making them truthy
         process.env.PROD ??= PROD ? '1' : ''
         process.env.DEV ??= DEV ? '1' : ''
-        process.env.SSR ??= '1'
 
-        for (const name in envs)
+        for (const name in envs) {
           process.env[name] ??= envs[name]
+        }
 
         // don't watch files in run mode
         if (!options.watch) {
-          viteConfig.server.watch = {
-            persistent: false,
-            depth: 0,
-            ignored: ['**/*'],
-          }
-        }
-      },
-      async configureServer(server) {
-        try {
-          await ctx.setServer(options, server, userConfig)
-          if (options.api && options.watch)
-            (await import('../../api/setup')).setup(ctx)
-        }
-        catch (err) {
-          await ctx.logger.printError(err, true)
-          process.exit(1)
+          viteConfig.server.watch = null
         }
 
-        // #415, in run mode we don't need the watcher, close it would improve the performance
-        if (!options.watch)
-          await server.watcher.close()
+        hijackVitePluginInject(viteConfig)
+
+        Object.defineProperty(viteConfig, '_vitest', {
+          value: options,
+          enumerable: false,
+          configurable: true,
+        })
+
+        const originalName = options.name
+        if (options.browser?.enabled && options.browser?.instances) {
+          options.browser.instances.forEach((instance) => {
+            instance.name ??= originalName ? `${originalName} (${instance.browser})` : instance.browser
+          })
+        }
+      },
+      configureServer: {
+        // runs after vite:import-analysis as it relies on `server` instance on Vite 5
+        order: 'post',
+        async handler(server) {
+          if (options.watch && process.env.VITE_TEST_WATCHER_DEBUG) {
+            server.watcher.on('ready', () => {
+              // eslint-disable-next-line no-console
+              console.log('[debug] watcher is ready')
+            })
+          }
+          await ctx._setServer(options, server, userConfig)
+          if (options.api && options.watch) {
+            (await import('../../api/setup')).setup(ctx)
+          }
+
+          // #415, in run mode we don't need the watcher, close it would improve the performance
+          if (!options.watch) {
+            await server.watcher.close()
+          }
+        },
       },
     },
-    EnvReplacerPlugin(),
-    GlobalSetupPlugin(ctx, ctx.logger),
+    SsrReplacerPlugin(),
     ...CSSEnablerPlugin(ctx),
     CoverageTransform(ctx),
-    options.ui
-      ? await UIPlugin()
-      : null,
-  ]
-    .filter(notNullish)
+    VitestCoreResolver(ctx),
+    options.ui ? await UIPlugin() : null,
+    ...MocksPlugins(),
+    VitestOptimizer(),
+    NormalizeURLPlugin(),
+  ].filter(notNullish)
+}
+function removeUndefinedValues<T extends Record<string, any>>(
+  obj: T,
+): T {
+  for (const key in Object.keys(obj)) {
+    if (obj[key] === undefined) {
+      delete obj[key]
+    }
+  }
+  return obj
 }

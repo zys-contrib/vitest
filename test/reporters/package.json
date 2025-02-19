@@ -1,14 +1,15 @@
 {
   "name": "@vitest/test-reporters",
+  "type": "module",
   "private": true,
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest"
   },
   "devDependencies": {
-    "execa": "^6.1.0",
-    "flatted": "^3.2.7",
+    "@vitest/runner": "workspace:*",
+    "flatted": "^3.2.9",
     "pkg-reporter": "./reportPkg/",
     "vitest": "workspace:*",
-    "vitest-sonar-reporter": "0.3.3"
+    "vitest-sonar-reporter": "0.4.1"
   }
 }

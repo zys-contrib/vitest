@@ -1,16 +1,25 @@
-import type { BirpcReturn } from 'birpc'
 import type { VitestClient } from '@vitest/ws-client'
-import type { WebSocketHandlers } from 'vitest/src/api/types'
-import { parse } from 'flatted'
+import type { BirpcReturn } from 'birpc'
+import type {
+  File,
+  ModuleGraphData,
+  SerializedConfig,
+  WebSocketEvents,
+  WebSocketHandlers,
+} from 'vitest'
 import { decompressSync, strFromU8 } from 'fflate'
-import type { File, ModuleGraphData, ResolvedConfig } from 'vitest/src/types'
-import { StateManager } from '../../../../vitest/src/node/state'
+import { parse } from 'flatted'
+import { StateManager } from '../../../../ws-client/src/state'
 
 interface HTMLReportMetadata {
   paths: string[]
   files: File[]
-  config: ResolvedConfig
-  moduleGraph: Record<string, ModuleGraphData>
+  config: SerializedConfig
+  projects: string[]
+  moduleGraph: Record<string, Record<string, ModuleGraphData>>
+  unhandledErrors: unknown[]
+  // filename -> source
+  sources: Record<string, string>
 }
 
 const noop: any = () => {}
@@ -39,33 +48,44 @@ export function createStaticClient(): VitestClient {
     getConfig: () => {
       return metadata.config
     },
-    getModuleGraph: async (id) => {
-      return metadata.moduleGraph[id]
+    getResolvedProjectNames: () => {
+      return metadata.projects
     },
-    getTransformResult: async (id) => {
-      return {
-        code: id,
-        source: '',
-      }
+    getModuleGraph: async (projectName, id) => {
+      return metadata.moduleGraph[projectName]?.[id]
     },
-    readFile: async (id) => {
-      return Promise.resolve(id)
+    getUnhandledErrors: () => {
+      return metadata.unhandledErrors
     },
+    getTransformResult: asyncNoop,
     onDone: noop,
-    onCollected: asyncNoop,
     onTaskUpdate: noop,
     writeFile: asyncNoop,
     rerun: asyncNoop,
+    rerunTask: asyncNoop,
     updateSnapshot: asyncNoop,
-    removeFile: asyncNoop,
-    createDirectory: asyncNoop,
     resolveSnapshotPath: asyncNoop,
     snapshotSaved: asyncNoop,
+    onAfterSuiteRun: asyncNoop,
+    onCancel: asyncNoop,
+    getCountOfFailedTests: () => 0,
+    sendLog: asyncNoop,
+    resolveSnapshotRawPath: asyncNoop,
+    readSnapshotFile: asyncNoop,
+    saveSnapshotFile: asyncNoop,
+    readTestFile: async (id: string) => {
+      return metadata.sources[id]
+    },
+    removeSnapshotFile: asyncNoop,
+    onUnhandledError: noop,
+    saveTestFile: asyncNoop,
+    getProvidedContext: () => ({}),
+    getTestFiles: asyncNoop,
   } as WebSocketHandlers
 
-  ctx.rpc = rpc as any as BirpcReturn<WebSocketHandlers>
+  ctx.rpc = rpc as any as BirpcReturn<WebSocketHandlers, WebSocketEvents>
 
-  let openPromise: Promise<void>
+  const openPromise = Promise.resolve()
 
   function reconnect() {
     registerMetadata()
@@ -74,7 +94,10 @@ export function createStaticClient(): VitestClient {
   async function registerMetadata() {
     const res = await fetch(window.METADATA_PATH!)
     const contentType = res.headers.get('content-type')?.toLowerCase() || ''
-    if (contentType.includes('application/gzip')) {
+    if (
+      contentType.includes('application/gzip')
+      || contentType.includes('application/x-gzip')
+    ) {
       const compressed = new Uint8Array(await res.arrayBuffer())
       const decompressed = strFromU8(decompressSync(compressed))
       metadata = parse(decompressed) as HTMLReportMetadata

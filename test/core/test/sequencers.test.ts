@@ -1,9 +1,9 @@
-import type { Vitest } from 'vitest'
+import type { Vitest, WorkspaceProject } from 'vitest/node'
+import type { WorkspaceSpec as DeprecatedWorkspaceSpec } from '../../../packages/vitest/src/node/pool'
 import { describe, expect, test, vi } from 'vitest'
-import { RandomSequencer } from 'vitest/src/node/sequencers/RandomSequencer'
-import { BaseSequencer } from 'vitest/src/node/sequencers/BaseSequencer'
-import type { VitestWorkspace } from 'vitest/node'
-import type { WorkspaceSpec } from 'vitest/src/node/pool'
+import { BaseSequencer } from '../../../packages/vitest/src/node/sequencers/BaseSequencer'
+import { RandomSequencer } from '../../../packages/vitest/src/node/sequencers/RandomSequencer'
+import { TestSpecification } from '../../../packages/vitest/src/node/spec'
 
 function buildCtx() {
   return {
@@ -19,14 +19,17 @@ function buildCtx() {
 
 function buildWorkspace() {
   return {
-    getName: () => 'test',
-  } as any as VitestWorkspace
+    name: 'test',
+    config: {
+      root: import.meta.dirname,
+    },
+  } as any as WorkspaceProject
 }
 
 const workspace = buildWorkspace()
 
 function workspaced(files: string[]) {
-  return files.map(file => [workspace, file] as WorkspaceSpec)
+  return files.map(file => new TestSpecification(workspace, file, 'forks')) as DeprecatedWorkspaceSpec[]
 }
 
 describe('base sequencer', () => {
@@ -40,8 +43,9 @@ describe('base sequencer', () => {
   test('prioritize unknown files', async () => {
     const ctx = buildCtx()
     vi.spyOn(ctx.cache, 'getFileStats').mockImplementation((file) => {
-      if (file === 'test:b')
+      if (file === 'test:b') {
         return { size: 2 }
+      }
     })
     const sequencer = new BaseSequencer(ctx)
     const files = workspaced(['b', 'a', 'c'])
@@ -52,12 +56,15 @@ describe('base sequencer', () => {
   test('sort by size, larger first', async () => {
     const ctx = buildCtx()
     vi.spyOn(ctx.cache, 'getFileStats').mockImplementation((file) => {
-      if (file === 'test:a')
+      if (file === 'test:a') {
         return { size: 1 }
-      if (file === 'test:b')
+      }
+      if (file === 'test:b') {
         return { size: 2 }
-      if (file === 'test:c')
+      }
+      if (file === 'test:c') {
         return { size: 3 }
+      }
     })
     const sequencer = new BaseSequencer(ctx)
     const files = workspaced(['b', 'a', 'c'])
@@ -68,12 +75,15 @@ describe('base sequencer', () => {
   test('sort by results, failed first', async () => {
     const ctx = buildCtx()
     vi.spyOn(ctx.cache, 'getFileTestResults').mockImplementation((file) => {
-      if (file === 'test:a')
+      if (file === 'test:a') {
         return { failed: false, duration: 1 }
-      if (file === 'test:b')
+      }
+      if (file === 'test:b') {
         return { failed: true, duration: 1 }
-      if (file === 'test:c')
+      }
+      if (file === 'test:c') {
         return { failed: true, duration: 1 }
+      }
     })
     const sequencer = new BaseSequencer(ctx)
     const files = workspaced(['b', 'a', 'c'])
@@ -84,12 +94,15 @@ describe('base sequencer', () => {
   test('sort by results, long first', async () => {
     const ctx = buildCtx()
     vi.spyOn(ctx.cache, 'getFileTestResults').mockImplementation((file) => {
-      if (file === 'test:a')
+      if (file === 'test:a') {
         return { failed: true, duration: 1 }
-      if (file === 'test:b')
+      }
+      if (file === 'test:b') {
         return { failed: true, duration: 2 }
-      if (file === 'test:c')
+      }
+      if (file === 'test:c') {
         return { failed: true, duration: 3 }
+      }
     })
     const sequencer = new BaseSequencer(ctx)
     const files = workspaced(['b', 'a', 'c'])
@@ -100,12 +113,15 @@ describe('base sequencer', () => {
   test('sort by results, long and failed first', async () => {
     const ctx = buildCtx()
     vi.spyOn(ctx.cache, 'getFileTestResults').mockImplementation((file) => {
-      if (file === 'test:a')
+      if (file === 'test:a') {
         return { failed: false, duration: 1 }
-      if (file === 'test:b')
+      }
+      if (file === 'test:b') {
         return { failed: false, duration: 6 }
-      if (file === 'test:c')
+      }
+      if (file === 'test:c') {
         return { failed: true, duration: 3 }
+      }
     })
     const sequencer = new BaseSequencer(ctx)
     const files = workspaced(['b', 'a', 'c'])

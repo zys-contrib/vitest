@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
 import { createChainable } from '@vitest/runner/utils'
+import { describe, expect, it } from 'vitest'
 
 describe('chainable', () => {
   it('creates', () => {
@@ -10,6 +10,7 @@ describe('chainable', () => {
     expect(chain()).toEqual({})
     expect(chain.a()).toEqual({ a: true })
 
+    // eslint-disable-next-line ts/no-unused-expressions
     chain.a
 
     expect(chain()).toEqual({})

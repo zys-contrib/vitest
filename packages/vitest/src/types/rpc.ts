@@ -1,37 +1,53 @@
-import type { RawSourceMap } from 'source-map'
-import type { FetchResult, ViteNodeResolveId } from 'vite-node'
-import type { EnvironmentOptions, ResolvedConfig, VitestEnvironment } from './config'
-import type { UserConsoleLog } from './general'
-import type { SnapshotResult } from './snapshot'
-import type { File, TaskResultPack } from './tasks'
-import type { AfterSuiteRunMeta } from './worker'
+import type { CancelReason, File, TaskEventPack, TaskResultPack } from '@vitest/runner'
+import type { SnapshotResult } from '@vitest/snapshot'
+import type { AfterSuiteRunMeta, TransformMode, UserConsoleLog } from './general'
 
 export interface RuntimeRPC {
-  fetch: (id: string, environment: VitestEnvironment) => Promise<FetchResult>
-  resolveId: (id: string, importer: string | undefined, environment: VitestEnvironment) => Promise<ViteNodeResolveId | null>
-  getSourceMap: (id: string, force?: boolean) => Promise<RawSourceMap | undefined>
+  fetch: (
+    id: string,
+    transformMode: TransformMode
+  ) => Promise<{
+    externalize?: string
+    id?: string
+  }>
+  transform: (id: string, transformMode: TransformMode) => Promise<{
+    code?: string
+  }>
+  resolveId: (
+    id: string,
+    importer: string | undefined,
+    transformMode: TransformMode
+  ) => Promise<{
+    external?: boolean | 'absolute' | 'relative'
+    id: string
+    /** @deprecated */
+    meta?: Record<string, any> | null
+    /** @deprecated */
+    moduleSideEffects?: boolean | 'no-treeshake' | null
+    /** @deprecated */
+    syntheticNamedExports?: boolean | string | null
+  } | null>
+  /**
+   * @deprecated unused
+   */
+  getSourceMap: (
+    id: string,
+    force?: boolean
+  ) => Promise<any>
 
-  onFinished: (files: File[], errors?: unknown[]) => void
-  onWorkerExit: (error: unknown, code?: number) => void
-  onPathsCollected: (paths: string[]) => void
   onUserConsoleLog: (log: UserConsoleLog) => void
   onUnhandledError: (err: unknown, type: string) => void
-  onCollected: (files: File[]) => void
+  onQueued: (file: File) => void
+  onCollected: (files: File[]) => Promise<void>
   onAfterSuiteRun: (meta: AfterSuiteRunMeta) => void
-  onTaskUpdate: (pack: TaskResultPack[]) => void
+  onTaskUpdate: (pack: TaskResultPack[], events: TaskEventPack[]) => Promise<void>
+  onCancel: (reason: CancelReason) => void
+  getCountOfFailedTests: () => number
 
   snapshotSaved: (snapshot: SnapshotResult) => void
   resolveSnapshotPath: (testPath: string) => string
 }
 
-export interface ContextTestEnvironment {
-  name: VitestEnvironment
-  options: EnvironmentOptions | null
-}
-
-export interface ContextRPC {
-  config: ResolvedConfig
-  files: string[]
-  invalidates?: string[]
-  environment: ContextTestEnvironment
+export interface RunnerRPC {
+  onCancel: (reason: CancelReason) => void
 }

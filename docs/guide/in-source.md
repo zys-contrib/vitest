@@ -1,20 +1,22 @@
 ---
-title: In-source testing | Guide
+title: In-Source Testing | Guide
 ---
 
-# In-source testing
+# In-Source Testing
 
-Vitest also provides a way to run tests within your source code along side the implementation, similar to [Rust's module tests](https://doc.rust-lang.org/book/ch11-03-test-organization.html#the-tests-module-and-cfgtest).
+Vitest provides a way to run tests within your source code along side the implementation, similar to [Rust's module tests](https://doc.rust-lang.org/book/ch11-03-test-organization.html#the-tests-module-and-cfgtest).
 
 This makes the tests share the same closure as the implementations and able to test against private states without exporting. Meanwhile, it also brings a closer feedback loop for development.
+
+::: warning
+This guide explains how to write tests inside your source code. If you need to write tests in separate test files, follow the ["Writing Tests" guide](/guide/#writing-tests).
+:::
 
 ## Setup
 
 To get started, put a `if (import.meta.vitest)` block at the end of your source file and write some tests inside it. For example:
 
-```ts
-// src/index.ts
-
+```ts [src/index.ts]
 // the implementation
 export function add(...args: number[]) {
   return args.reduce((a, b) => a + b, 0)
@@ -33,13 +35,12 @@ if (import.meta.vitest) {
 
 Update the `includeSource` config for Vitest to grab the files under `src/`:
 
-```ts
-// vite.config.ts
+```ts [vitest.config.ts]
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
   test: {
-    includeSource: ['src/**/*.{js,ts}'],
+    includeSource: ['src/**/*.{js,ts}'], // [!code ++]
   },
 })
 ```
@@ -50,82 +51,72 @@ Then you can start to test!
 $ npx vitest
 ```
 
-## Production build
+## Production Build
 
 For the production build, you will need to set the `define` options in your config file, letting the bundler do the dead code elimination. For example, in Vite
 
-```diff
-// vite.config.ts
+```ts [vitest.config.ts]
 import { defineConfig } from 'vitest/config'
 
 export default defineConfig({
-+ define: {
-+   'import.meta.vitest': 'undefined',
-+ },
   test: {
-    includeSource: ['src/**/*.{js,ts}']
+    includeSource: ['src/**/*.{js,ts}'],
   },
+  define: { // [!code ++]
+    'import.meta.vitest': 'undefined', // [!code ++]
+  }, // [!code ++]
 })
 ```
 
 ### Other Bundlers
 
-<details mt4>
-<summary text-xl>unbuild</summary>
-
-```diff
-// build.config.ts
+::: details unbuild
+```ts [build.config.ts]
 import { defineBuildConfig } from 'unbuild'
 
 export default defineBuildConfig({
-+ replace: {
-+   'import.meta.vitest': 'undefined',
-+ },
+  replace: { // [!code ++]
+    'import.meta.vitest': 'undefined', // [!code ++]
+  }, // [!code ++]
   // other options
 })
 ```
 
-Learn more: <a href="https://github.com/unjs/unbuild" target="_blank">unbuild</a>
+Learn more: [unbuild](https://github.com/unjs/unbuild)
+:::
 
-</details>
-
-<details my2>
-<summary text-xl>rollup</summary>
-
-```diff
-// rollup.config.js
-+ import replace from '@rollup/plugin-replace'
+::: details Rollup
+```ts [rollup.config.js]
+import replace from '@rollup/plugin-replace' // [!code ++]
 
 export default {
   plugins: [
-+   replace({
-+     'import.meta.vitest': 'undefined',
-+   })
+    replace({ // [!code ++]
+      'import.meta.vitest': 'undefined', // [!code ++]
+    }) // [!code ++]
   ],
   // other options
 }
 ```
 
-Learn more: <a href="https://rollupjs.org/" target="_blank">rollup</a>
-
-</details>
+Learn more: [Rollup](https://rollupjs.org/)
+:::
 
 ## TypeScript
 
 To get TypeScript support for `import.meta.vitest`, add `vitest/importMeta` to your `tsconfig.json`:
 
-```diff
-// tsconfig.json
+```json [tsconfig.json]
 {
   "compilerOptions": {
     "types": [
-+     "vitest/importMeta"
+      "vitest/importMeta" // [!code ++]
     ]
   }
 }
 ```
 
-Reference to [`test/import-meta`](https://github.com/vitest-dev/vitest/tree/main/test/import-meta) for the full example.
+Reference to [`examples/in-source-test`](https://github.com/vitest-dev/vitest/tree/main/examples/in-source-test) for the full example.
 
 ## Notes
 

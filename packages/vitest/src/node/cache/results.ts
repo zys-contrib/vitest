@@ -1,7 +1,7 @@
+import type { File } from '@vitest/runner'
+import type { ResolvedConfig } from '../types/config'
 import fs from 'node:fs'
 import { dirname, relative, resolve } from 'pathe'
-import type { File, ResolvedConfig } from '../../types'
-import { version } from '../../../package.json'
 
 export interface SuiteResultCache {
   failed: boolean
@@ -12,29 +12,36 @@ export class ResultsCache {
   private cache = new Map<string, SuiteResultCache>()
   private workspacesKeyMap = new Map<string, string[]>()
   private cachePath: string | null = null
-  private version: string = version
+  private version: string
   private root = '/'
 
-  public getCachePath() {
+  constructor(version: string) {
+    this.version = version
+  }
+
+  public getCachePath(): string | null {
     return this.cachePath
   }
 
-  setConfig(root: string, config: ResolvedConfig['cache']) {
+  setConfig(root: string, config: ResolvedConfig['cache']): void {
     this.root = root
-    if (config)
+    if (config) {
       this.cachePath = resolve(config.dir, 'results.json')
+    }
   }
 
-  getResults(key: string) {
+  getResults(key: string): SuiteResultCache | undefined {
     return this.cache.get(key)
   }
 
-  async readFromCache() {
-    if (!this.cachePath)
+  async readFromCache(): Promise<void> {
+    if (!this.cachePath) {
       return
+    }
 
-    if (!fs.existsSync(this.cachePath))
+    if (!fs.existsSync(this.cachePath)) {
       return
+    }
 
     const resultsCache = await fs.promises.readFile(this.cachePath, 'utf8')
     const { results, version } = JSON.parse(resultsCache || '[]')
@@ -51,11 +58,12 @@ export class ResultsCache {
     }
   }
 
-  updateResults(files: File[]) {
+  updateResults(files: File[]): void {
     files.forEach((file) => {
       const result = file.result
-      if (!result)
+      if (!result) {
         return
+      }
       const duration = result.duration || 0
       // store as relative, so cache would be the same in CI and locally
       const relativePath = relative(this.root, file.filepath)
@@ -66,23 +74,26 @@ export class ResultsCache {
     })
   }
 
-  removeFromCache(filepath: string) {
+  removeFromCache(filepath: string): void {
     this.cache.forEach((_, key) => {
-      if (key.endsWith(filepath))
+      if (key.endsWith(filepath)) {
         this.cache.delete(key)
+      }
     })
   }
 
-  async writeToCache() {
-    if (!this.cachePath)
+  async writeToCache(): Promise<void> {
+    if (!this.cachePath) {
       return
+    }
 
     const results = Array.from(this.cache.entries())
 
     const cacheDirname = dirname(this.cachePath)
 
-    if (!fs.existsSync(cacheDirname))
+    if (!fs.existsSync(cacheDirname)) {
       await fs.promises.mkdir(cacheDirname, { recursive: true })
+    }
 
     const cache = JSON.stringify({
       version: this.version,

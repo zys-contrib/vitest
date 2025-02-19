@@ -1,33 +1,52 @@
-import type { MessagePort } from 'node:worker_threads'
-import type { Test } from '@vitest/runner'
-import type { ModuleCacheMap, ViteNodeResolveId } from 'vite-node'
+import type { CancelReason, FileSpecification, Task } from '@vitest/runner'
 import type { BirpcReturn } from 'birpc'
-import type { MockMap } from './mocker'
-import type { ResolvedConfig } from './config'
-import type { ContextRPC, RuntimeRPC } from './rpc'
+import type { ModuleCacheMap, ModuleExecutionInfo, ViteNodeResolveId } from 'vite-node'
+import type { SerializedConfig } from '../runtime/config'
+import type { Environment } from './environment'
+import type { TransformMode } from './general'
+import type { RunnerRPC, RuntimeRPC } from './rpc'
 
-export interface WorkerContext extends ContextRPC {
-  workerId: number
-  port: MessagePort
+/** @deprecated unused */
+export type ResolveIdFunction = (
+  id: string,
+  importer?: string
+) => Promise<ViteNodeResolveId | null>
+
+export type WorkerRPC = BirpcReturn<RuntimeRPC, RunnerRPC>
+
+export interface ContextTestEnvironment {
+  name: string
+  transformMode?: TransformMode
+  options: Record<string, any> | null
 }
 
-export type ResolveIdFunction = (id: string, importer?: string) => Promise<ViteNodeResolveId | null>
-
-export interface AfterSuiteRunMeta {
-  coverage?: unknown
+export interface ContextRPC {
+  pool: string
+  worker: string
+  workerId: number
+  config: SerializedConfig
+  projectName: string
+  files: string[] | FileSpecification[]
+  environment: ContextTestEnvironment
+  providedContext: Record<string, any>
+  invalidates?: string[]
 }
 
 export interface WorkerGlobalState {
-  ctx: WorkerContext
-  config: ResolvedConfig
-  rpc: BirpcReturn<RuntimeRPC>
-  current?: Test
+  ctx: ContextRPC
+  config: SerializedConfig
+  rpc: WorkerRPC
+  current?: Task
   filepath?: string
+  environment: Environment
   environmentTeardownRun?: boolean
+  onCancel: Promise<CancelReason>
   moduleCache: ModuleCacheMap
-  mockMap: MockMap
+  moduleExecutionInfo?: ModuleExecutionInfo
+  providedContext: Record<string, any>
   durations: {
     environment: number
     prepare: number
   }
+  onFilterStackTrace?: (trace: string) => string
 }

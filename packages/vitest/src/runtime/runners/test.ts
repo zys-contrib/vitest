@@ -1,100 +1,178 @@
-import type { Suite, Test, TestContext, VitestRunner, VitestRunnerImportSource } from '@vitest/runner'
-import { GLOBAL_EXPECT, getState, setState } from '@vitest/expect'
+import type { ExpectStatic } from '@vitest/expect'
+import type {
+  CancelReason,
+  File,
+  Suite,
+  Task,
+  TestContext,
+  VitestRunner,
+  VitestRunnerImportSource,
+} from '@vitest/runner'
+import type { SerializedConfig } from '../config'
+import type { VitestExecutor } from '../execute'
+import { getState, GLOBAL_EXPECT, setState } from '@vitest/expect'
+import { getNames, getTestName, getTests } from '@vitest/runner/utils'
+import { createExpect } from '../../integrations/chai/index'
+import { inject } from '../../integrations/inject'
 import { getSnapshotClient } from '../../integrations/snapshot/chai'
 import { vi } from '../../integrations/vi'
-import { getFullName, getNames, getWorkerState } from '../../utils'
-import { createExpect } from '../../integrations/chai/index'
-import type { ResolvedConfig } from '../../types/config'
-import type { VitestExecutor } from '../execute'
 import { rpc } from '../rpc'
+import { getWorkerState } from '../utils'
 
 export class VitestTestRunner implements VitestRunner {
   private snapshotClient = getSnapshotClient()
   private workerState = getWorkerState()
   private __vitest_executor!: VitestExecutor
+  private cancelRun = false
 
-  constructor(public config: ResolvedConfig) {}
+  private assertionsErrors = new WeakMap<Readonly<Task>, Error>()
+
+  public pool: string = this.workerState.ctx.pool
+
+  constructor(public config: SerializedConfig) {}
 
   importFile(filepath: string, source: VitestRunnerImportSource): unknown {
-    if (source === 'setup')
+    if (source === 'setup') {
       this.workerState.moduleCache.delete(filepath)
+    }
     return this.__vitest_executor.executeId(filepath)
   }
 
-  onBeforeRun() {
+  onCollectStart(file: File): void {
+    this.workerState.current = file
+  }
+
+  onAfterRunFiles(): void {
     this.snapshotClient.clear()
-  }
-
-  async onAfterRun() {
-    const result = await this.snapshotClient.resetCurrent()
-    if (result)
-      await rpc().snapshotSaved(result)
-  }
-
-  onAfterRunSuite(suite: Suite) {
-    if (this.config.logHeapUsage && typeof process !== 'undefined')
-      suite.result!.heap = process.memoryUsage().heapUsed
-  }
-
-  onAfterRunTest(test: Test) {
-    this.snapshotClient.clearTest()
-
-    if (this.config.logHeapUsage && typeof process !== 'undefined')
-      test.result!.heap = process.memoryUsage().heapUsed
-
     this.workerState.current = undefined
   }
 
-  async onBeforeRunTest(test: Test) {
-    const name = getNames(test).slice(1).join(' > ')
+  async onAfterRunSuite(suite: Suite): Promise<void> {
+    if (this.config.logHeapUsage && typeof process !== 'undefined') {
+      suite.result!.heap = process.memoryUsage().heapUsed
+    }
 
-    if (test.mode !== 'run') {
-      this.snapshotClient.skipTestSnapshots(name)
+    if (suite.mode !== 'skip' && 'filepath' in suite) {
+      // mark snapshots in skipped tests as not obsolete
+      for (const test of getTests(suite)) {
+        if (test.mode === 'skip') {
+          const name = getNames(test).slice(1).join(' > ')
+          this.snapshotClient.skipTest(suite.file.filepath, name)
+        }
+      }
+
+      const result = await this.snapshotClient.finish(suite.file.filepath)
+      await rpc().snapshotSaved(result)
+    }
+
+    this.workerState.current = suite.suite || suite.file
+  }
+
+  onAfterRunTask(test: Task): void {
+    if (this.config.logHeapUsage && typeof process !== 'undefined') {
+      test.result!.heap = process.memoryUsage().heapUsed
+    }
+
+    this.workerState.current = test.suite || test.file
+  }
+
+  onCancel(_reason: CancelReason): void {
+    this.cancelRun = true
+  }
+
+  injectValue(key: string): any {
+    // inject has a very limiting type controlled by ProvidedContext
+    // some tests override it which causes the build to fail
+    return (inject as any)(key)
+  }
+
+  async onBeforeRunTask(test: Task): Promise<void> {
+    if (this.cancelRun) {
+      test.mode = 'skip'
+    }
+
+    if (test.mode !== 'run' && test.mode !== 'queued') {
       return
     }
 
     clearModuleMocks(this.config)
-    await this.snapshotClient.setTest(test.file!.filepath, name, this.workerState.config.snapshotOptions)
 
     this.workerState.current = test
   }
 
-  onBeforeTryTest(test: Test) {
-    setState({
-      assertionCalls: 0,
-      isExpectingAssertions: false,
-      isExpectingAssertionsError: null,
-      expectedAssertionsNumber: null,
-      expectedAssertionsNumberErrorGen: null,
-      testPath: test.suite.file?.filepath,
-      currentTestName: getFullName(test),
-      snapshotState: this.snapshotClient.snapshotState,
-    }, (globalThis as any)[GLOBAL_EXPECT])
+  async onBeforeRunSuite(suite: Suite): Promise<void> {
+    if (this.cancelRun) {
+      suite.mode = 'skip'
+    }
+
+    // initialize snapshot state before running file suite
+    if (suite.mode !== 'skip' && 'filepath' in suite) {
+      await this.snapshotClient.setup(
+        suite.file.filepath,
+        this.workerState.config.snapshotOptions,
+      )
+    }
+
+    this.workerState.current = suite
   }
 
-  onAfterTryTest(test: Test) {
+  onBeforeTryTask(test: Task): void {
+    this.snapshotClient.clearTest(test.file.filepath, test.id)
+    setState(
+      {
+        assertionCalls: 0,
+        isExpectingAssertions: false,
+        isExpectingAssertionsError: null,
+        expectedAssertionsNumber: null,
+        expectedAssertionsNumberErrorGen: null,
+        testPath: test.file.filepath,
+        currentTestName: getTestName(test),
+        snapshotState: this.snapshotClient.getSnapshotState(test.file.filepath),
+      },
+      (globalThis as any)[GLOBAL_EXPECT],
+    )
+  }
+
+  onAfterTryTask(test: Task): void {
     const {
       assertionCalls,
       expectedAssertionsNumber,
       expectedAssertionsNumberErrorGen,
       isExpectingAssertions,
       isExpectingAssertionsError,
-      // @ts-expect-error local is untyped
-    } = test.context._local
-      ? test.context.expect.getState()
-      : getState((globalThis as any)[GLOBAL_EXPECT])
-    if (expectedAssertionsNumber !== null && assertionCalls !== expectedAssertionsNumber)
+    }
+      // @ts-expect-error _local is untyped
+      = 'context' in test && test.context._local
+        ? test.context.expect.getState()
+        : getState((globalThis as any)[GLOBAL_EXPECT])
+    if (
+      expectedAssertionsNumber !== null
+      && assertionCalls !== expectedAssertionsNumber
+    ) {
       throw expectedAssertionsNumberErrorGen!()
-    if (isExpectingAssertions === true && assertionCalls === 0)
+    }
+    if (isExpectingAssertions === true && assertionCalls === 0) {
       throw isExpectingAssertionsError
+    }
+    if (this.config.expect.requireAssertions && assertionCalls === 0) {
+      throw this.assertionsErrors.get(test)
+    }
   }
 
-  extendTestContext(context: TestContext): TestContext {
-    let _expect: Vi.ExpectStatic | undefined
+  extendTaskContext(context: TestContext): TestContext {
+    // create error during the test initialization so we have a nice stack trace
+    if (this.config.expect.requireAssertions) {
+      this.assertionsErrors.set(
+        context.task,
+        new Error('expected any number of assertion, but got none'),
+      )
+    }
+    let _expect: ExpectStatic | undefined
     Object.defineProperty(context, 'expect', {
       get() {
-        if (!_expect)
-          _expect = createExpect(context.meta)
+        if (!_expect) {
+          _expect = createExpect(context.task)
+        }
         return _expect
       },
     })
@@ -107,19 +185,25 @@ export class VitestTestRunner implements VitestRunner {
   }
 }
 
-function clearModuleMocks(config: ResolvedConfig) {
-  const { clearMocks, mockReset, restoreMocks, unstubEnvs, unstubGlobals } = config
+function clearModuleMocks(config: SerializedConfig) {
+  const { clearMocks, mockReset, restoreMocks, unstubEnvs, unstubGlobals }
+    = config
 
   // since each function calls another, we can just call one
-  if (restoreMocks)
+  if (restoreMocks) {
     vi.restoreAllMocks()
-  else if (mockReset)
+  }
+  else if (mockReset) {
     vi.resetAllMocks()
-  else if (clearMocks)
+  }
+  else if (clearMocks) {
     vi.clearAllMocks()
+  }
 
-  if (unstubEnvs)
+  if (unstubEnvs) {
     vi.unstubAllEnvs()
-  if (unstubGlobals)
+  }
+  if (unstubGlobals) {
     vi.unstubAllGlobals()
+  }
 }

@@ -3,7 +3,7 @@
 /* Texts */
 export const vitestName = 'Vitest'
 export const vitestShortName = 'Vitest'
-export const vitestDescription = 'A blazing fast unit test framework powered by Vite'
+export const vitestDescription = 'Next generation testing framework powered by Vite'
 
 /* CDN fonts and styles */
 export const googleapis = 'https://fonts.googleapis.com'
@@ -19,8 +19,8 @@ export const github = 'https://github.com/vitest-dev/vitest'
 export const releases = 'https://github.com/vitest-dev/vitest/releases'
 export const contributing = 'https://github.com/vitest-dev/vitest/blob/main/CONTRIBUTING.md'
 export const discord = 'https://chat.vitest.dev'
+export const bluesky = 'https://bsky.app/profile/vitest.dev'
 export const mastodon = 'https://elk.zone/m.webtoo.ls/@vitest'
-export const twitter = 'https://twitter.com/vitest_dev'
 
 /* Avatar/Image/Sponsors servers */
 export const preconnectLinks = [googleapis, gstatic]

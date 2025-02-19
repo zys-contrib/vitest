@@ -1,55 +1,36 @@
-import fs from 'node:fs'
-import { findUp } from 'find-up'
+import type { SuiteResultCache } from './results'
+import { slash } from '@vitest/utils'
 import { resolve } from 'pathe'
-import { loadConfigFromFile } from 'vite'
-import { configFiles } from '../../constants'
-import type { CliOptions } from '../cli-api'
-import { slash } from '../../utils'
+import { hash } from '../hash'
 import { FilesStatsCache } from './files'
 import { ResultsCache } from './results'
 
 export class VitestCache {
-  results = new ResultsCache()
-  stats = new FilesStatsCache()
+  results: ResultsCache
+  stats: FilesStatsCache = new FilesStatsCache()
 
-  getFileTestResults(key: string) {
+  constructor(version: string) {
+    this.results = new ResultsCache(version)
+  }
+
+  getFileTestResults(key: string): SuiteResultCache | undefined {
     return this.results.getResults(key)
   }
 
-  getFileStats(key: string) {
+  getFileStats(key: string): {
+    size: number
+  } | undefined {
     return this.stats.getStats(key)
   }
 
-  static resolveCacheDir(root: string, dir: string | undefined) {
-    return resolve(root, slash(dir || 'node_modules/.vitest'))
-  }
-
-  static async clearCache(options: CliOptions) {
-    const root = resolve(options.root || process.cwd())
-
-    const configPath = options.config === false
-      ? false
-      : options.config
-        ? resolve(root, options.config)
-        : await findUp(configFiles, { cwd: root } as any)
-
-    const config = configPath
-      ? (await loadConfigFromFile({ command: 'serve', mode: 'test' }, configPath))?.config
-      : undefined
-
-    const cache = config?.test?.cache
-
-    if (cache === false)
-      throw new Error('Cache is disabled')
-
-    const cachePath = VitestCache.resolveCacheDir(root, cache?.dir)
-
-    let cleared = false
-
-    if (fs.existsSync(cachePath)) {
-      fs.rmSync(cachePath, { recursive: true, force: true })
-      cleared = true
-    }
-    return { dir: cachePath, cleared }
+  static resolveCacheDir(root: string, dir?: string, projectName?: string): string {
+    const baseDir = slash(dir || 'node_modules/.vite/vitest')
+    return projectName
+      ? resolve(
+          root,
+          baseDir,
+          hash('md5', projectName, 'hex'),
+        )
+      : resolve(root, baseDir)
   }
 }

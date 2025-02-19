@@ -1,4 +1,4 @@
-import { LitElement, css, html } from 'lit'
+import { css, html, LitElement } from 'lit'
 import { customElement, property } from 'lit/decorators.js'
 
 /**
@@ -21,13 +21,13 @@ export class MyButton extends LitElement {
    * The name to say "Hello" to.
    */
   @property()
-    name = 'World'
+  name = 'World'
 
   /**
    * The number of times the button has been clicked.
    */
   @property({ type: Number })
-    count = 1
+  count = 1
 
   render() {
     return html`

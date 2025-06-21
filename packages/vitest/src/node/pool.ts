@@ -70,7 +70,7 @@ export function getFilePoolName(project: TestProject, file: string): Pool {
   for (const [glob, pool] of project.config.poolMatchGlobs) {
     if ((pool as Pool) === 'browser') {
       throw new Error(
-        'Since Vitest 0.31.0 "browser" pool is not supported in "poolMatchGlobs". You can create a project to run some of your tests in browser in parallel. Read more: https://vitest.dev/guide/projects',
+        'Since Vitest 0.31.0 "browser" pool is not supported in `poolMatchGlobs`. You can create a project to run some of your tests in browser in parallel. Read more: https://vitest.dev/guide/projects',
       )
     }
     if (pm.isMatch(file, glob, { cwd: project.config.root })) {
@@ -224,6 +224,13 @@ export function createPool(ctx: Vitest): ProcessPool {
 
     async function sortSpecs(specs: TestSpecification[]) {
       if (ctx.config.shard) {
+        if (!ctx.config.passWithNoTests && ctx.config.shard.count > specs.length) {
+          throw new Error(
+            '--shard <count> must be a smaller than count of test files. '
+            + `Resolved ${specs.length} test files for --shard=${ctx.config.shard.index}/${ctx.config.shard.count}.`,
+          )
+        }
+
         specs = await sequencer.shard(specs)
       }
       return sequencer.sort(specs)

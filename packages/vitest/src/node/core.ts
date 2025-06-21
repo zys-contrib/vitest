@@ -2,7 +2,6 @@ import type { CancelReason, File } from '@vitest/runner'
 import type { Awaitable } from '@vitest/utils'
 import type { Writable } from 'node:stream'
 import type { ViteDevServer } from 'vite'
-import type { defineWorkspace } from 'vitest/config'
 import type { SerializedCoverageConfig } from '../runtime/config'
 import type { ArgumentsType, ProvidedContext, UserConsoleLog } from '../types/general'
 import type { CliOptions } from './cli/cli-api'
@@ -431,7 +430,7 @@ export class Vitest {
     if (this.config.projects) {
       if (typeof this.config.workspace !== 'undefined') {
         this.logger.warn(
-          'Both `config.projects` and `config.workspace` are defined. Ignoring the `workspace` option.',
+          'Both `test.projects` and `test.workspace` are defined. Ignoring the `test.workspace` option.',
         )
       }
 
@@ -446,7 +445,7 @@ export class Vitest {
 
     if (Array.isArray(this.config.workspace)) {
       this.logger.deprecate(
-        'The `workspace` option is deprecated and will be removed in the next major. To hide this warning, rename `workspace` option to `projects`.',
+        'The `test.workspace` option is deprecated and will be removed in the next major. To hide this warning, rename `test.workspace` option to `test.projects`.',
       )
       return resolveProjects(
         this,
@@ -477,11 +476,11 @@ export class Vitest {
       : 'the root config file'
 
     this.logger.deprecate(
-      `The workspace file is deprecated and will be removed in the next major. Please, use the \`projects\` field in ${configFile} instead.`,
+      `The workspace file is deprecated and will be removed in the next major. Please, use the \`test.projects\` field in ${configFile} instead.`,
     )
 
     const workspaceModule = await this.import<{
-      default: ReturnType<typeof defineWorkspace>
+      default: TestProjectConfiguration[]
     }>(workspaceConfigPath)
 
     if (!workspaceModule.default || !Array.isArray(workspaceModule.default)) {

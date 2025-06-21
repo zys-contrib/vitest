@@ -241,6 +241,7 @@ export default (parentServer: ParentBrowserProject, base = '/'): Plugin[] => {
           'vitest > @vitest/snapshot > magic-string',
           'vitest > chai',
           'vitest > chai > loupe',
+          'vitest > @vitest/runner > strip-literal',
           'vitest > @vitest/utils > loupe',
           '@vitest/browser > @testing-library/user-event',
           '@vitest/browser > @testing-library/dom',
@@ -390,7 +391,7 @@ export default (parentServer: ParentBrowserProject, base = '/'): Plugin[] => {
         }
         const s = new MagicString(code, { filename })
         s.prepend(
-          `import.meta.vitest = __vitest_index__;\n`,
+          `Object.defineProperty(import.meta, 'vitest', { get() { return typeof __vitest_worker__ !== 'undefined' && __vitest_worker__.filepath === "${filename.replace(/"/g, '\\"')}" ? __vitest_index__ : undefined } });\n`,
         )
         return {
           code: s.toString(),
